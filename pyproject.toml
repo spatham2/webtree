@@ -1,0 +1,24 @@
+[project]
+name = "webtree"
+version = "0.1.0"
+description = "Constellation GUI and CLI for branching Claude Code sessions"
+requires-python = ">=3.11"
+dependencies = ["fastapi", "uvicorn", "textual"]
+
+[project.optional-dependencies]
+test = ["pytest", "httpx"]
+
+[project.scripts]
+webtree = "webtree.__main__:main"
+
+[tool.setuptools]
+packages = ["webtree"]
+
+[tool.setuptools.package-data]
+webtree = ["static/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120

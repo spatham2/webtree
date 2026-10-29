@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Web Tree</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header id="bar">
+  <span class="logo">&#9733; WEB TREE</span>
+  <button id="btn-fit" title="Center the sky">Center</button>
+  <button id="btn-zoom-out" title="Zoom out">-</button>
+  <span id="zoom-label">1x</span>
+  <button id="btn-zoom-in" title="Zoom in">+</button>
+  <button id="btn-clusters">Propose clusters</button>
+  <button id="btn-sun">Sun</button>
+  <span class="spacer"></span>
+  <span id="status"></span>
+  <div class="menu">
+    <button id="btn-settings">Settings</button>
+    <div id="settings" class="pop hidden"></div>
+  </div>
+</header>
+<main id="main">
+  <aside id="list">
+    <div class="list-head"><span class="list-title">SESSIONS</span><input id="list-filter" placeholder="filter..."></div>
+    <div id="list-items"></div>
+  </aside>
+  <div id="sky-wrap"><canvas id="sky"></canvas></div>
+  <aside id="panel" class="hidden"></aside>
+</main>
+<section id="bin">
+  <div class="bin-head">
+    <span class="bin-title">DROP BIN</span>
+    <span id="bin-count"></span>
+    <input id="bin-filter" placeholder="filter...">
+    <span class="hint">drag onto the sun or a planet, or click a suggested parent</span>
+  </div>
+  <div id="bin-items"></div>
+</section>
+<div id="tip" class="hidden"></div>
+<div id="modal-back" class="hidden"><div id="modal"></div></div>
+<div id="toast" class="hidden"></div>
+<script src="/static/app.js"></script>
+</body>
+</html>
