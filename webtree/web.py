@@ -73,6 +73,10 @@ class ClusterMoveBody(pydantic.BaseModel):
     cluster_id: str | None = None
 
 
+class GroupParentBody(pydantic.BaseModel):
+    group_id: str | None = None
+
+
 class GroupBody(pydantic.BaseModel):
     node_ids: list[str]
 
@@ -278,6 +282,11 @@ def create_app(wt: core.Core) -> fastapi.FastAPI:
     @app.post("/api/groups")
     def group_siblings(body: GroupBody) -> dict:
         return {"group_id": wt.group_siblings(body.node_ids)}
+
+    @app.post("/api/nodes/{node_id}/group_parent")
+    def set_group_parent(node_id: str, body: GroupParentBody) -> dict:
+        wt.set_group_parent(node_id, body.group_id)
+        return {"ok": True}
 
     @app.post("/api/nodes/{node_id}/ungroup")
     def ungroup(node_id: str) -> dict:

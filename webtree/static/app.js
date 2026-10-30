@@ -8,7 +8,7 @@
   const WHEEL_SENSITIVITY = 0.0015;
   const BUTTON_ZOOM_STEP = 1.25;
   const CLUSTER_OPEN_ZOOM = 2;
-  const RING = 70;
+  const RING = 60;
   const ARC = 40;
   const TIER_R = { mars: 4, earth: 7, jupiter: 11 };
   const PULSE_MS = 2000;
@@ -199,7 +199,7 @@
   }
 
   function titleOf(id) {
-    if (id === 'sun') return 'Sun';
+    if (id === 'sun') return 'Head';
     const c = clusters()[id];
     if (c) return c.name;
     const n = nodes()[id];
@@ -264,7 +264,7 @@
 
   function spacing(count) {
     const grow = Math.sqrt(count);
-    return { arc: ARC + 6 * grow, ring: RING + 8 * grow };
+    return { arc: ARC + 6 * grow, ring: RING + 7 * grow };
   }
 
   function clusterOpen(cid) {
@@ -290,14 +290,24 @@
       }
       items[id] = { id, type: n.kind === 'cloud' ? 'cloud' : 'planet', node: n, parentRaw: n.parent, children: [] };
     }
-    const sun = { id: 'sun', type: 'sun', children: [], depth: 0, x: 0, y: 0 };
+    const groupHub = {};
     for (const it of Object.values(items)) {
+      const gp = it.node && it.node.group_parent;
+      if (!gp) continue;
+      if (!groupHub[gp]) groupHub[gp] = { id: 'group:' + gp, type: 'hub', group: gp, parentRaw: null, children: [] };
+      it.parentRaw = groupHub[gp].id;
+    }
+    const sun = { id: 'sun', type: 'sun', children: [], depth: 0, x: 0, y: 0 };
+    for (const hub of Object.values(groupHub)) items[hub.id] = hub;
+    for (const it of Object.values(items)) {
+      if (it.type === 'hub') continue;
       let p = it.parentRaw || 'sun';
       if (p !== 'sun') p = rep[p] || p;
       if (p === it.id || (p !== 'sun' && !items[p])) p = 'sun';
       it.parent = p;
     }
     for (const it of Object.values(items)) {
+      if (it.type === 'hub') continue;
       let cur = it.parent;
       const seen = new Set([it.id]);
       while (cur !== 'sun') {
@@ -306,12 +316,14 @@
           break;
         }
         seen.add(cur);
-        cur = items[cur].parent;
+        cur = items[cur].type === 'hub' ? 'sun' : items[cur].parent;
       }
     }
     const created = (it) => (it.node && it.node.created) || '';
     const slotOf = {};
+    const slotHubs = [];
     for (const it of Object.values(items).sort((a, b) => created(a).localeCompare(created(b)) || a.id.localeCompare(b.id))) {
+      if (it.type === 'hub') continue;
       const holder = it.parent === 'sun' ? sun : items[it.parent];
       const g = it.node && it.node.group;
       const key = g ? `${it.parent}|${g}` : null;
@@ -323,12 +335,34 @@
       if (key) slotOf[key] = slot;
       (holder.slots = holder.slots || []).push(slot);
     }
+    for (const sl of Object.values(slotOf)) {
+      const hub = groupHub[sl.group];
+      if (!hub || sl.members.length < 2) continue;
+      sl.hub = hub;
+      slotHubs.push(sl);
+    }
+    for (const hub of Object.values(groupHub)) {
+      const attached = slotHubs.some((sl) => sl.hub === hub);
+      for (const it of Object.values(items)) {
+        if (it.type === 'hub' || it.parentRaw !== hub.id) continue;
+        if (attached) {
+          it.parent = hub.id;
+          (hub.slots = hub.slots || []).push({ id: 'slot:' + it.id, members: [it], group: null });
+        } else {
+          const own = items[it.node.parent] ? it.node.parent : 'sun';
+          it.parent = own;
+          ((own === 'sun' ? sun : items[own]).slots = (own === 'sun' ? sun : items[own]).slots || []).push({ id: 'slot:' + it.id, members: [it], group: null });
+        }
+      }
+    }
     for (const it of [sun, ...Object.values(items)]) {
       it.slots = it.slots || [];
       it.children = it.slots.flatMap((sl) => sl.members);
     }
     const leaves = (it) => {
-      for (const sl of it.slots) sl.leaves = sl.members.reduce((acc, m) => acc + leaves(m), 0);
+      for (const sl of it.slots) {
+        sl.leaves = sl.members.reduce((acc, m) => acc + leaves(m), 0) + (sl.hub ? leaves(sl.hub) : 0);
+      }
       it.leaves = it.slots.length ? it.slots.reduce((acc, sl) => acc + sl.leaves, 0) : 1;
       return it.leaves;
     };
@@ -348,7 +382,19 @@
         const n = sl.members.length;
         const step = n > 1 ? Math.min(GROUP_GAP / r, span / n) : 0;
         let b = a;
+        const hubSpan = sl.hub ? ((a1 - a0) * sl.hub.leaves) / it.leaves : 0;
+        const half = sl.members.length >> 1;
         sl.members.forEach((c, i) => {
+          if (sl.hub && i === half) {
+            const hub = sl.hub;
+            hub.depth = depth;
+            hub.angle = mid;
+            hub.r = r;
+            hub.x = Math.cos(mid) * r;
+            hub.y = Math.sin(mid) * r;
+            place(hub, b, b + hubSpan, depth + 1);
+            b += hubSpan;
+          }
           const ang = mid + (i - (n - 1) / 2) * step;
           const sub = ((a1 - a0) * c.leaves) / it.leaves;
           c.depth = depth;
@@ -371,7 +417,7 @@
       }
     };
     place(sun, FAN_START, FAN_END, 1);
-    const all = [sun, ...Object.values(items)];
+    const all = [sun, ...Object.values(items).filter((it) => it.type !== 'hub' || it.r !== undefined)];
     const byId = Object.fromEntries(all.map((it) => [it.id, it]));
     const rings = Array.from({ length: maxDepth }, (_, i) => r1 + i * gap.ring);
     state.layout = { items: all, byId, rep, rings, r1, ring: gap.ring, groups };
@@ -888,14 +934,14 @@
     for (const r of L.rings) arc(r, FAN_START, FAN_END, M[1], [1, 5]);
     const byParent = {};
     for (const it of L.items) {
-      if (it.type === 'sun') continue;
+      if (it.type === 'sun' || it.type === 'hub') continue;
       (byParent[it.parent] = byParent[it.parent] || []).push(it);
     }
     for (const [pid, kids] of Object.entries(byParent)) {
       const parent = L.byId[pid];
       if (!parent) continue;
       const bus = busRadius(parent, kids[0]);
-      const base = pid === 'sun' ? M[12] : M[6];
+      const base = pid === 'sun' ? M[12] : parent.type === 'hub' ? M[14] : M[6];
       const angles = kids.map((k) => (k.slot && k.slot.members.length > 1 ? k.slot.angle : k.angle));
       const lo = Math.min(parent.angle, ...angles);
       const hi = Math.max(parent.angle, ...angles);
@@ -903,6 +949,7 @@
       const trunk = solid ? base : M[13];
       const trunkPattern = solid ? null : [1, 2];
       const sunGap = pid === 'sun' ? itemRadius(parent) / z : 0;
+      if (parent.type === 'hub') junction(parent.angle, parent.r, M[14]);
       spoke(parent.angle, parent.r + sunGap, bus, trunk, trunkPattern);
       if (pid === 'sun') {
         const solidKids = kids.filter((k) => k.type !== 'cloud').map((k) => (k.slot && k.slot.members.length > 1 ? k.slot.angle : k.angle));
@@ -953,22 +1000,6 @@
 
     drawEdges(L);
 
-    for (const p of (state.view && state.view.pulls) || []) {
-      const a = posOf(p.source);
-      const b = posOf(p.target);
-      if (!a || !b || a === b) continue;
-      const [x0, y0] = toScreen(a.x, a.y);
-      const [x1, y1] = toScreen(b.x, b.y);
-      line(x0, y0, x1, y1, M[14], [4, 3], -Math.floor(state.t / 120));
-      const ang = Math.atan2(y1 - y0, x1 - x0);
-      const back = 10 * s;
-      const hx = x1 - Math.cos(ang) * back;
-      const hy = y1 - Math.sin(ang) * back;
-      for (const da of [-0.5, 0.5]) {
-        line(hx, hy, hx - Math.cos(ang + da) * 4 * s, hy - Math.sin(ang + da) * 4 * s, M[14], null, 0);
-      }
-    }
-
     for (const [cid, c] of Object.entries(clusters())) {
       if (!clusterOpen(cid)) continue;
       const pts = c.members.map((m) => L.byId[m]).filter(Boolean);
@@ -991,11 +1022,11 @@
     const [sunX, sunY] = scr.sun;
     drawSprite(sunSprite(frame), sunX, sunY, s);
     state.hits.push({ type: 'sun', id: 'sun', x: sunX, y: sunY, r: 14 * s });
-    if (state.showLabels) pixelText('SUN', sunX, sunY + 21 * s, M[10], 1);
+    if (state.showLabels) pixelText('HEAD', sunX, sunY + 21 * s, M[10], 1);
 
     const margin = 40 * s;
     for (const it of L.items) {
-      if (it.type === 'sun') continue;
+      if (it.type === 'sun' || it.type === 'hub') continue;
       const [x, y] = scr[it.id];
       if (x < -margin || y < -margin || x > W + margin || y > H + margin) continue;
       const r = itemRadius(it);
@@ -1065,11 +1096,11 @@
     const d = state.drag;
     if (d && d.kind === 'node' && d.moved && d.cur) {
       line(d.from.x, d.from.y, d.cur[0], d.cur[1], M[14], [2, 2], -Math.floor(state.t / 80));
-      pixelText(state.dropTarget ? (state.dropTarget.type === 'sun' ? 'MOVE TO TOP' : 'PULL INTO') : 'DRAG ONTO A PLANET', d.cur[0], d.cur[1] + 8, M[14], 1);
+      pixelText(state.dropTarget ? (state.dropTarget.type === 'sun' ? 'MOVE TO TOP' : 'PULL, GROUP OR PARENT') : 'DRAG ONTO A PLANET', d.cur[0], d.cur[1] + 8, M[14], 1);
     }
 
     if (state.view && !Object.keys(nodes()).length) {
-      pixelText('DRAG A SESSION FROM THE DROP BIN ONTO THE SUN', sunX, sunY + 34 * s, M[13], 1);
+      pixelText('DRAG A SESSION FROM THE DROP BIN ONTO THE HEAD', sunX, sunY + 34 * s, M[13], 1);
     }
   }
 
@@ -1232,25 +1263,37 @@
 
   function onNodeDrop(from, target) {
     if (target.type === 'sun') {
-      if (confirm(`Move "${titleOf(from.id)}" to the top level (under the sun)?`)) {
+      if (confirm(`Move "${titleOf(from.id)}" to the top level (under the head)?`)) {
         act(() => api('POST', `/api/nodes/${enc(from.id)}/move`, { parent: 'sun' }), 'Moved');
       }
       return;
     }
-    const a = nodes()[from.id];
-    const b = nodes()[target.id];
-    if (a && b && a.parent === b.parent) {
-      openModal(
-        h('h2', null, 'Siblings'),
-        h('div', null, `"${titleOf(from.id)}" and "${titleOf(target.id)}" share a parent.`),
-        h('div', { class: 'row', style: 'margin-top:10px' },
-          h('button', { class: 'primary', onclick: () => act(() => api('POST', '/api/groups', { node_ids: [from.id, target.id] }), 'Placed side by side').then(closeModal) }, 'Place side by side'),
-          h('button', { onclick: () => { closeModal(); openPullDialog(from.id, target.id); } }, 'Pull context instead'),
-          h('button', { onclick: closeModal }, 'Cancel')),
-      );
-      return;
-    }
-    openPullDialog(from.id, target.id);
+    openDropMenu(from.id, target.id);
+  }
+
+  function openDropMenu(fromId, targetId) {
+    const fromCluster = !!clusters()[fromId];
+    const groupBtn = fromCluster
+      ? null
+      : h('button', { onclick: () => act(() => api('POST', '/api/groups', { node_ids: [targetId, fromId] }), 'Grouped').then(closeModal) }, 'Group');
+    const parentBtn = fromCluster
+      ? null
+      : h('button', { onclick: () => act(() => api('POST', `/api/nodes/${enc(fromId)}/move`, { parent: targetId }), 'Parent set').then(closeModal) }, 'Make parent');
+    openModal(
+      h('h2', null, 'Drop'),
+      h('div', null, `"${titleOf(fromId)}" onto "${titleOf(targetId)}"`),
+      h('div', { class: 'muted', style: 'margin-top:6px' },
+        'Pull context: copy what one session knows into the other.',
+        h('br'),
+        fromCluster ? '' : `Group: "${titleOf(fromId)}" moves next to "${titleOf(targetId)}" on one shared branch; its own downstream planets come with it.`,
+        fromCluster ? '' : h('br'),
+        fromCluster ? '' : `Make parent: "${titleOf(targetId)}" becomes the parent of "${titleOf(fromId)}" (its downstream planets come with it).`),
+      h('div', { class: 'row', style: 'margin-top:10px' },
+        h('button', { class: 'primary', onclick: () => { closeModal(); openPullDialog(fromId, targetId); } }, 'Pull context'),
+        groupBtn,
+        parentBtn,
+        h('button', { onclick: closeModal }, 'Cancel')),
+    );
   }
 
   let tipReq = 0;
@@ -1409,7 +1452,7 @@
 
   function nodeLink(id) {
     if (!id) return '-';
-    if (id === 'sun') return h('span', { class: 'link', onclick: () => select({ type: 'sun', id: 'sun' }) }, 'Sun');
+    if (id === 'sun') return h('span', { class: 'link', onclick: () => select({ type: 'sun', id: 'sun' }) }, 'Head');
     return h('span', { class: 'link', onclick: () => select({ type: 'node', id }) }, titleOf(id));
   }
 
@@ -1466,7 +1509,7 @@
       ]),
     );
     if (n.sun_drift) {
-      out.push(h('div', { class: 'warn' }, 'Sun drift: this session predates changes to its memory (overall or project layer changed since it was created).'));
+      out.push(h('div', { class: 'warn' }, 'Head drift: this session predates changes to its memory (overall or project layer changed since it was created).'));
     }
     out.push(h('div', { class: 'row' }, h('span', { class: 'link', onclick: () => { state.focusPlanet = n.id; select({ type: 'sun', id: 'sun' }); } }, 'Show what this session loads (sun)')));
 
@@ -1492,7 +1535,7 @@
     );
 
     const parentSel = h('select', null,
-      h('option', { value: 'sun' }, 'Sun (top level)'),
+      h('option', { value: 'sun' }, 'Head (top level)'),
       planets().filter((p) => p.id !== n.id).map((p) => h('option', { value: p.id, selected: p.id === n.parent }, titleOf(p.id).slice(0, 50))));
     out.push(h('div', { class: 'row' }, 'Move under', parentSel, h('button', { class: 'small', onclick: () => act(() => api('POST', `/api/nodes/${enc(n.id)}/move`, { parent: parentSel.value }), 'Moved') }, 'Move')));
     if (sameProject.length) {
@@ -1709,7 +1752,7 @@
     const d = state.sun.data;
     const focus = state.focusPlanet && nodes()[state.focusPlanet];
     const focusProject = focus ? focus.project : null;
-    const out = [h('h2', null, 'The Sun'), h('div', { class: 'muted' }, 'What sessions load: overall layer + one section per project. Read-only.')];
+    const out = [h('h2', null, 'The Head'), h('div', { class: 'muted' }, 'What sessions load: overall layer + one section per project. Read-only.')];
     if (focus) {
       out.push(h('div', { class: 'row' }, 'Highlighting what ', nodeLink(focus.id), ' loads.',
         h('button', { class: 'small', onclick: () => { state.focusPlanet = null; renderPanel(true); } }, 'clear')));
@@ -1777,24 +1820,35 @@
   }
 
   function sideBySideSection(n) {
-    const siblings = Object.values(nodes()).filter((m) => m.id !== n.id && m.parent === n.parent && (m.kind === 'planet' || m.kind === 'cloud'));
-    const mates = n.group ? siblings.filter((m) => m.group === n.group) : [];
-    const out = [h('h3', null, 'Side by side')];
+    const all = Object.values(nodes()).filter((m) => m.id !== n.id && (m.kind === 'planet' || m.kind === 'cloud'));
+    const mates = n.group ? all.filter((m) => m.group === n.group) : [];
+    const out = [h('h3', null, 'Group')];
     if (mates.length) {
       out.push(h('div', { class: 'muted' }, 'Shares one branch with: '), h('div', null, mates.map((m) => h('div', null, nodeLink(m.id)))));
     } else {
-      out.push(h('div', { class: 'muted' }, 'Put this next to a sibling on one shared branch.'));
+      out.push(h('div', { class: 'muted' }, 'Pick a planet; it moves next to this one on a shared branch and keeps its downstream planets.'));
     }
-    const candidates = siblings.filter((m) => !n.group || m.group !== n.group);
+    const candidates = all.filter((m) => !n.group || m.group !== n.group);
     const row = h('div', { class: 'row' });
     if (candidates.length) {
       const sel = h('select', null, candidates.map((m) => h('option', { value: m.id }, titleOf(m.id).slice(0, 50))));
-      row.append(sel, h('button', { class: 'small', onclick: () => act(() => api('POST', '/api/groups', { node_ids: [n.id, sel.value] }), 'Placed side by side') }, 'Join'));
-    } else if (!mates.length) {
-      out.push(h('div', { class: 'muted' }, 'No siblings under the same parent yet.'));
+      row.append(sel, h('button', { class: 'small', onclick: () => act(() => api('POST', '/api/groups', { node_ids: [n.id, sel.value] }), 'Grouped') }, 'Group'));
     }
     if (n.group) row.append(h('button', { class: 'small', onclick: () => act(() => api('POST', `/api/nodes/${enc(n.id)}/ungroup`), 'Separated') }, 'Separate'));
     if (row.childNodes.length) out.push(row);
+    const parentNode = nodes()[n.parent];
+    const parentGroup = parentNode && parentNode.group;
+    if (parentGroup || n.group_parent) {
+      const gid = n.group_parent || parentGroup;
+      const groupTitle = Object.values(nodes()).filter((m) => m.group === gid).map((m) => titleOf(m.id)).join(' + ');
+      out.push(
+        h('h3', null, 'Attached to'),
+        h('div', { class: 'row' },
+          h('label', null, h('input', { type: 'radio', name: 'attach', checked: !n.group_parent, onchange: () => act(() => api('POST', `/api/nodes/${enc(n.id)}/group_parent`, { group_id: null }), 'Child of its planet') }), ` ${titleOf(n.parent)} only`),
+          h('label', null, h('input', { type: 'radio', name: 'attach', checked: !!n.group_parent, onchange: () => act(() => api('POST', `/api/nodes/${enc(n.id)}/group_parent`, { group_id: gid }), 'Child of the whole group') }), ` whole group (${groupTitle.slice(0, 50)})`),
+        ),
+      );
+    }
     return out;
   }
 
@@ -2010,7 +2064,7 @@
 
   function listLabel(row) {
     const n = nodes()[row.id];
-    if (row.type === 'sun') return [h('span', { class: 'g', style: 'color:var(--c10)' }, '☀'), ' SUN'];
+    if (row.type === 'sun') return [h('span', { class: 'g', style: 'color:var(--c10)' }, '☀'), ' HEAD'];
     if (row.type === 'cluster') {
       const c = clusters()[row.id];
       return [h('span', { class: 'g', style: 'color:var(--c14)' }, '▣'), ` ${c.name} (${c.members.length})`];
@@ -2024,7 +2078,7 @@
       sig.planet_size === false ? ' ' : h('span', { class: 'pct' }, ` ${Math.round(n.context_pct || 0)}% `),
       titleOf(row.id),
       n.badge ? h('span', { style: 'color:var(--c8)' }, ' [J]') : null,
-      n.sun_drift ? h('span', { style: 'color:var(--c10)' }, ' Δsun') : null,
+      n.sun_drift ? h('span', { style: 'color:var(--c10)' }, ' Δhead') : null,
     ];
   }
 

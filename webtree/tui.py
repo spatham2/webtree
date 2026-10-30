@@ -70,7 +70,7 @@ def planet_label(item: dict, signals: dict, busy: str | None) -> text.Text:
     if item.get("badge"):
         label.append(" [J]", style="bold color(9)")
     if item.get("sun_drift"):
-        label.append(" Δsun", style="color(11)")
+        label.append(" Δhead", style="color(11)")
     if item.get("missing"):
         label.append(" (missing transcript)", style="color(9)")
     if busy:
@@ -199,6 +199,18 @@ class WTree(widgets.Tree[Key]):
             self.app.show_details(node.data)
 
 
+class PaneTab(widgets.Static):
+    """A minimized pane; click to restore it."""
+
+    def __init__(self, label: str, pane: str, **kwargs: str) -> None:
+        super().__init__(label, **kwargs)
+        self.pane = pane
+
+    def on_click(self) -> None:
+        if isinstance(self.app, WebTreeApp):
+            self.app.restore_pane(self.pane)
+
+
 class ChoiceModal(screen.ModalScreen[str | None]):
     """Pick one option from a list."""
 
@@ -307,6 +319,13 @@ class WebTreeApp(app.App[None]):
     #tree { height: 1fr; border: round $primary; }
     #side-scroll { height: 2fr; border: round $secondary; padding: 0 1; }
     #bin { height: 1fr; border: round $warning; }
+    #side-scroll.-hidden, #bin.-hidden, #right.-hidden { display: none; }
+    .tab { height: 1; display: none; background: $boost; color: $text-muted; padding: 0 1; }
+    .tab:hover { background: $accent; color: $text; }
+    .tab.-visible { display: block; }
+    #rail { width: 3; display: none; background: $boost; color: $text-muted; content-align: center middle; }
+    #rail:hover { background: $accent; color: $text; }
+    #rail.-visible { display: block; }
     ModalScreen { align: center middle; }
     .dialog { width: 80%; height: auto; max-height: 85%; border: thick $accent; background: $surface; padding: 1 2; }
     .dialog-title { text-style: bold; margin-bottom: 1; }
@@ -327,9 +346,13 @@ class WebTreeApp(app.App[None]):
         binding.Binding("b", "focus_bin", "Bin"),
         binding.Binding("u", "unplace", "Unplace"),
         binding.Binding("m", "move", "Move"),
-        binding.Binding("g", "side_by_side", "Side by side"),
+        binding.Binding("g", "side_by_side", "Group"),
+        binding.Binding("a", "attach", "Attach to group"),
         binding.Binding("K", "clusters", "Clusters"),
         binding.Binding("S", "signals", "Signals"),
+        binding.Binding("D", "toggle_details", "Details"),
+        binding.Binding("B", "toggle_bin", "Bin pane"),
+        binding.Binding("T", "tree_only", "Tree only"),
         binding.Binding("R", "refresh", "Refresh"),
         binding.Binding("escape", "cancel", "Cancel", show=False),
         binding.Binding("q", "quit", "Quit"),
@@ -364,23 +387,22 @@ class WebTreeApp(app.App[None]):
         with containers.Horizontal(id="main"):
             with containers.Vertical(id="left"):
                 yield widgets.Input(placeholder="filter by title, note, cluster…", id="filter")
-                tree = WTree(text.Text("☀ Sun"), data=SUN_KEY, id="tree")
+                tree = WTree(text.Text("☀ Head"), data=SUN_KEY, id="tree")
                 tree.auto_expand = False
-                tree.border_title = "Tree"
                 yield tree
             with containers.Vertical(id="right"):
-                side_scroll = containers.VerticalScroll(id="side-scroll")
-                side_scroll.border_title = "Details"
-                with side_scroll:
+                yield PaneTab("▸ Details", "details", id="details-tab", classes="tab")
+                with containers.VerticalScroll(id="side-scroll"):
                     yield widgets.Static(id="side")
-                drop_bin = BinList(id="bin")
-                drop_bin.border_title = "Drop bin (b)"
-                yield drop_bin
+                yield PaneTab("▸ Drop bin", "bin", id="bin-tab", classes="tab")
+                yield BinList(id="bin")
+            yield PaneTab("◂\n\nP\na\nn\ne\ns", "all", id="rail")
         footer = widgets.Footer()
         footer.compact = True
         yield footer
 
     def on_mount(self) -> None:
+        self._update_pane_titles()
         self.reload()
         self.tree.focus()
         self.set_interval(self._poll_interval, self._poll)
@@ -519,13 +541,13 @@ class WebTreeApp(app.App[None]):
             entries = [e for e in entries if needle in (e["title"] + " " + e["session_id"]).casefold()]
         bin_list.clear_options()
         bin_list.add_options([option_list.Option(bin_label(e), id=e["session_id"]) for e in entries])
-        bin_list.border_title = f"Drop bin (b) · {len(entries)}"
+        self._bin_title(len(entries))
         ids = [e["session_id"] for e in entries]
         if ids:
             bin_list.highlighted = ids.index(previous) if previous in ids else 0
 
     def _sun_label(self) -> text.Text:
-        label = text.Text("☀ Sun", style="bold color(11)")
+        label = text.Text("☀ Head", style="bold color(11)")
         planets = sum(1 for n in self.data["nodes"].values() if n["kind"] == "planet")
         label.append(f"  {planets} planets · {len(self.data['bin'])} in bin", style="dim")
         return label
@@ -538,7 +560,7 @@ class WebTreeApp(app.App[None]):
 
     def _title_of(self, ref: str) -> str:
         if ref == core.SUN:
-            return "Sun"
+            return "Head"
         if ref in self.data["nodes"]:
             return node_title(self.data["nodes"][ref])
         if ref in self.data["clusters"]:
@@ -609,7 +631,10 @@ class WebTreeApp(app.App[None]):
         rows.append(("Parent", self._title_of(item.get("parent") or "")))
         mates = self._group_mates(nid)
         if mates:
-            rows.append(("Side by side", ", ".join(self._title_of(m) for m in mates)))
+            rows.append(("Group", ", ".join(self._title_of(m) for m in mates)))
+        if item.get("group_parent"):
+            members = [n for n, v in self.data["nodes"].items() if v.get("group") == item["group_parent"]]
+            rows.append(("Attached to", "whole group: " + " + ".join(self._title_of(m) for m in members)))
         rows.append(("Created", short_time(item.get("created", ""))))
         if session:
             rows.append(("CWD", session["cwd"] or "-"))
@@ -635,7 +660,7 @@ class WebTreeApp(app.App[None]):
             drift = (
                 text.Text("drifted: predates current memory", style="color(11)") if item.get("sun_drift") else "in sync"
             )
-            rows.append(("Sun", drift))
+            rows.append(("Head", drift))
             rows.append(("Loads", f"overall layer + project {session['project']}"))
             if nid not in self._open_cache:
                 ok, command = self._quiet(self.wt.open_command, nid)
@@ -732,7 +757,7 @@ class WebTreeApp(app.App[None]):
         if self._sun_cache is None:
             self._sun_cache = self.wt.sun_view()
         view = self._sun_cache
-        parts: list = [text.Text("☀ Sun: what each session loads", style="bold color(11)")]
+        parts: list = [text.Text("☀ Head: what each session loads", style="bold color(11)")]
         parts.append(text.Text("\n▶ Overall layer (every session)", style="bold reverse color(11)"))
         for f in view["overall"]:
             parts.append(self._sun_file_line(f, highlighted=True))
@@ -928,7 +953,56 @@ class WebTreeApp(app.App[None]):
         self.reload()
         self.notify("Refreshed")
 
+    def _update_pane_titles(self) -> None:
+        right_hidden = self.query_one("#right").has_class("-hidden")
+        arrow = "▸" if not right_hidden else "◂"
+        tip = "hide side panes" if not right_hidden else "show side panes"
+        self.tree.border_title = f"Tree [@click=app.tree_only]\\[{arrow}][/] [dim]{tip}[/]"
+        self.query_one("#side-scroll").border_title = "Details [@click=app.toggle_details]\\[▾][/]"
+        self._bin_title()
+        self.query_one("#details-tab").set_class(self.query_one("#side-scroll").has_class("-hidden"), "-visible")
+        self.query_one("#bin-tab").set_class(self.bin_list.has_class("-hidden"), "-visible")
+        self.query_one("#rail").set_class(right_hidden, "-visible")
+
+    def _bin_title(self, count: int | None = None) -> None:
+        if count is not None:
+            self._bin_count = count
+        count = getattr(self, "_bin_count", None)
+        suffix = f" · {count}" if count is not None else ""
+        self.bin_list.border_title = f"Drop bin (b){suffix} [@click=app.toggle_bin]\\[▾][/]"
+
+    def _set_pane(self, selector: str, visible: bool) -> None:
+        self.query_one(selector).set_class(not visible, "-hidden")
+        hidden = all(self.query_one(sel).has_class("-hidden") for sel in ("#side-scroll", "#bin"))
+        self.query_one("#right").set_class(hidden, "-hidden")
+        self._update_pane_titles()
+        if not visible and self.focused is not None and not self.focused.display:
+            self.tree.focus()
+
+    def restore_pane(self, which: str) -> None:
+        if which == "details":
+            self._set_pane("#side-scroll", True)
+        elif which == "bin":
+            self._set_pane("#bin", True)
+        else:
+            self._set_pane("#side-scroll", True)
+            self._set_pane("#bin", True)
+
+    def action_toggle_details(self) -> None:
+        self._set_pane("#side-scroll", self.query_one("#side-scroll").has_class("-hidden"))
+
+    def action_toggle_bin(self) -> None:
+        self._set_pane("#bin", self.bin_list.has_class("-hidden"))
+
+    def action_tree_only(self) -> None:
+        show = self.query_one("#right").has_class("-hidden")
+        self._set_pane("#side-scroll", show)
+        self._set_pane("#bin", show)
+        self.tree.focus()
+
     def action_focus_bin(self) -> None:
+        if self.bin_list.has_class("-hidden"):
+            self._set_pane("#bin", True)
         if not self.bin_list.option_count:
             self.notify("Drop bin is empty")
             return
@@ -1056,7 +1130,7 @@ class WebTreeApp(app.App[None]):
 
     @work
     async def action_side_by_side(self) -> None:
-        """Join the highlighted node with a sibling on one shared branch, or separate it."""
+        """Group the highlighted node with any planet on one shared branch, or separate it."""
         nid = self._require("planet", "cloud")
         if nid is None:
             return
@@ -1065,17 +1139,18 @@ class WebTreeApp(app.App[None]):
             sid
             for sid, n in self.data["nodes"].items()
             if sid != nid
-            and n.get("parent") == item.get("parent")
             and n["kind"] in ("planet", "cloud")
             and (not item.get("group") or n.get("group") != item.get("group"))
         ]
         options: list[tuple[str, text.Text | str]] = [(sid, self._title_of(sid)) for sid in siblings]
         if item.get("group"):
-            options.insert(0, ("__separate__", "Separate from its side-by-side group"))
+            options.insert(0, ("__separate__", "Separate from its group"))
         if not options:
-            self.notify("No siblings under the same parent", severity="warning")
+            self.notify("No other planets to group with", severity="warning")
             return
-        choice = await self.push_screen_wait(ChoiceModal(f"Side by side: {self._title_of(nid)!r}", options))
+        choice = await self.push_screen_wait(
+            ChoiceModal(f"Group with {self._title_of(nid)!r} (it moves next to this one)", options)
+        )
         if choice is None:
             return
         if choice == "__separate__":
@@ -1084,6 +1159,26 @@ class WebTreeApp(app.App[None]):
             ok = self._try(self.wt.group_siblings, [nid, choice])[0]
         if ok:
             self.reload(("node", nid))
+
+    def action_attach(self) -> None:
+        """Toggle the highlighted node between a child of its planet and a child of that planet's whole group."""
+        nid = self._require("planet", "cloud")
+        if nid is None:
+            return
+        item = self.data["nodes"][nid]
+        parent_group = self.data["nodes"].get(item.get("parent") or "", {}).get("group")
+        if item.get("group_parent"):
+            ok = self._try(self.wt.set_group_parent, nid, None)[0]
+            message = "Now a child of its planet only"
+        elif parent_group:
+            ok = self._try(self.wt.set_group_parent, nid, parent_group)[0]
+            message = "Now a child of the whole group"
+        else:
+            self.notify("Its parent is not in a side-by-side group", severity="warning")
+            return
+        if ok:
+            self.reload(("node", nid))
+            self.notify(message)
 
     def action_pull(self) -> None:
         if self._pending and self._pending.kind == "pull":
@@ -1106,7 +1201,7 @@ class WebTreeApp(app.App[None]):
         target_item = self.data["nodes"].get(ref, {}) if kind == "node" else {}
         if pending.kind in ("move", "place"):
             if kind != "sun" and target_item.get("kind") != "planet":
-                self.notify("Pick the sun or a planet", severity="warning")
+                self.notify("Pick the head or a planet", severity="warning")
                 return
             self._set_pending(None)
             if pending.kind == "move":

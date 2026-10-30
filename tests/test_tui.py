@@ -52,7 +52,7 @@ def test_starts_with_sun_and_bin(wt: core.Core) -> None:
         async with app.run_test(size=(160, 50)) as pilot:
             await pilot.pause()
             assert app.tree.root.data == tui.SUN_KEY
-            assert "Sun" in str(app.tree.root.label)
+            assert "Head" in str(app.tree.root.label)
             assert app.bin_list.option_count == 3
             assert "Overall layer" in side_plain(app)
 
@@ -304,11 +304,96 @@ def test_side_by_side_join_and_separate(wt: core.Core) -> None:
             await wait_until(pilot, lambda: wt.view()["nodes"][a].get("group") is not None)
             assert wt.view()["nodes"][b]["group"] == wt.view()["nodes"][a]["group"]
             assert "┃" in str(app._tnodes[("node", b)].label)
-            assert "Side by side" in side_plain(app)
+            assert "Group" in side_plain(app)
             await select_node(app, pilot, ("node", a))
             await pilot.press("g")
             await pilot.pause()
             await pilot.press("enter")
             await wait_until(pilot, lambda: wt.view()["nodes"][a].get("group") is None)
+
+    run(body)
+
+
+def test_group_with_planet_from_another_branch(wt: core.Core) -> None:
+    async def body() -> None:
+        a = wt.place("aaaa0001", core.SUN)
+        b = wt.place("aaaa0002", a)
+        app = make_app(wt)
+        async with app.run_test(size=(160, 50)) as pilot:
+            await select_node(app, pilot, ("node", a))
+            app.reload(("node", a))
+            await pilot.pause()
+            c = wt.place("bbbb0001", core.SUN)
+            app.reload(("node", c))
+            await select_node(app, pilot, ("node", c))
+            await pilot.press("g")
+            await pilot.pause()
+            assert isinstance(app.screen, tui.ChoiceModal)
+            option_list = app.screen.query_one(widgets.OptionList)
+            ids = [option_list.get_option_at_index(i).id for i in range(option_list.option_count)]
+            assert b in ids
+            option_list.highlighted = ids.index(b)
+            await pilot.press("enter")
+            await wait_until(pilot, lambda: wt.view()["nodes"][b].get("group") is not None)
+            assert wt.view()["nodes"][b]["parent"] == core.SUN
+
+    run(body)
+
+
+def test_attach_child_to_whole_group(wt: core.Core) -> None:
+    async def body() -> None:
+        a = wt.place("aaaa0001", core.SUN)
+        b = wt.place("aaaa0002", core.SUN)
+        c = wt.place("bbbb0001", a)
+        group = wt.group_siblings([a, b])
+        app = make_app(wt)
+        async with app.run_test(size=(160, 50)) as pilot:
+            await select_node(app, pilot, ("node", c))
+            await pilot.press("a")
+            await wait_until(pilot, lambda: wt.view()["nodes"][c].get("group_parent") == group)
+            assert "Attached to" in side_plain(app)
+            await select_node(app, pilot, ("node", c))
+            await pilot.press("a")
+            await wait_until(pilot, lambda: not wt.view()["nodes"][c].get("group_parent"))
+
+    run(body)
+
+
+async def click_border_link(pilot: pilot_mod.Pilot, selector: str, changed: Callable[[], bool]) -> None:
+    for x in range(1, 40):
+        await pilot.click(selector, offset=(x, 0))
+        await pilot.pause()
+        if changed():
+            return
+    raise AssertionError(f"no clickable border link on {selector}")
+
+
+def test_minimize_details_and_bin(wt: core.Core) -> None:
+    async def body() -> None:
+        app = make_app(wt)
+        async with app.run_test(size=(160, 50)) as pilot:
+            await pilot.pause()
+            right = app.query_one("#right")
+            details = app.query_one("#side-scroll")
+            await click_border_link(pilot, "#side-scroll", lambda: not details.display)
+            assert right.display and app.query_one("#details-tab").display
+            await click_border_link(pilot, "#bin", lambda: not app.bin_list.display)
+            assert not right.display and app.query_one("#rail").display
+            assert app.tree.size.width > 150
+            await pilot.click("#rail")
+            await pilot.pause()
+            assert details.display and app.bin_list.display and not app.query_one("#rail").display
+            await click_border_link(pilot, "#tree", lambda: not right.display)
+            await click_border_link(pilot, "#tree", lambda: right.display)
+            await click_border_link(pilot, "#side-scroll", lambda: not details.display)
+            await pilot.click("#details-tab")
+            await pilot.pause()
+            assert details.display
+            await pilot.press("T")
+            await pilot.pause()
+            assert not right.display
+            await pilot.press("b")
+            await pilot.pause()
+            assert app.bin_list.display and not details.display
 
     run(body)

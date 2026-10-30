@@ -192,12 +192,9 @@ def test_model_cluster_name_trims_and_falls_back(wt: core.Core, monkeypatch: pyt
 def test_side_by_side_groups(wt: core.Core) -> None:
     a = wt.place("aaaa0001", core.SUN)
     b = wt.place("aaaa0002", core.SUN)
-    c = wt.place("bbbb0001", a)
     group = wt.group_siblings([a, b])
     nodes = wt.view()["nodes"]
     assert nodes[a]["group"] == nodes[b]["group"] == group
-    with pytest.raises(core.CoreError):
-        wt.group_siblings([a, c])
     with pytest.raises(core.CoreError):
         wt.group_siblings([a])
     cloud = wt.stage(a)
@@ -208,3 +205,85 @@ def test_side_by_side_groups(wt: core.Core) -> None:
     wt.move(b, a)
     nodes = wt.view()["nodes"]
     assert nodes[a]["group"] is None and nodes[b]["group"] is None
+
+
+def test_group_any_planets_keeps_downstream(wt: core.Core) -> None:
+    a = wt.place("aaaa0001", core.SUN)
+    b = wt.place("aaaa0002", a)
+    c = wt.place("bbbb0001", core.SUN)
+    child_of_b = wt.stage(b, note="downstream of b")
+    group = wt.group_siblings([c, b])
+    nodes = wt.view()["nodes"]
+    assert nodes[b]["parent"] == core.SUN == nodes[c]["parent"]
+    assert nodes[b]["group"] == nodes[c]["group"] == group
+    assert nodes[child_of_b]["parent"] == b
+    wt.ungroup(b)
+    nodes = wt.view()["nodes"]
+    assert nodes[b]["parent"] == a and nodes[b]["group"] is None
+    assert nodes[c]["group"] is None
+
+
+def test_ask_failure_is_core_error(wt: core.Core, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("FAKE_CLAUDE_FAIL", "1")
+    with pytest.raises(core.CoreError):
+        wt.summary("aaaa0001", "brief")
+
+
+def test_group_with_descendant_keeps_both_subtrees(wt: core.Core) -> None:
+    a = wt.place("aaaa0001", core.SUN)
+    b = wt.place("aaaa0002", a)
+    c = wt.place("bbbb0001", b)
+    sibling_of_b = wt.stage(a, note="other child of a")
+    group = wt.group_siblings([a, b])
+    nodes = wt.view()["nodes"]
+    assert nodes[a]["parent"] == nodes[b]["parent"] == core.SUN
+    assert nodes[a]["group"] == nodes[b]["group"] == group
+    assert nodes[c]["parent"] == b
+    assert nodes[sibling_of_b]["parent"] == a
+    wt.ungroup(b)
+    assert wt.view()["nodes"][b]["parent"] == a
+
+
+def test_group_ancestor_onto_descendant(wt: core.Core) -> None:
+    a = wt.place("aaaa0001", core.SUN)
+    b = wt.place("aaaa0002", a)
+    c = wt.place("bbbb0001", b)
+    wt.group_siblings([c, a])
+    nodes = wt.view()["nodes"]
+    assert nodes[a]["parent"] == nodes[c]["parent"] == core.SUN
+    assert nodes[b]["parent"] == a
+    wt.move(a, core.SUN)
+
+
+def test_children_of_whole_group(wt: core.Core) -> None:
+    a = wt.place("aaaa0001", core.SUN)
+    b = wt.place("aaaa0002", core.SUN)
+    own_child = wt.stage(a, note="already under a")
+    group = wt.group_siblings([a, b])
+    nodes = wt.view()["nodes"]
+    assert nodes[own_child]["parent"] == a and not nodes[own_child].get("group_parent")
+    shared = wt.place("bbbb0001", b)
+    wt.set_group_parent(shared, group)
+    assert wt.view()["nodes"][shared]["group_parent"] == group
+    with pytest.raises(core.CoreError):
+        wt.set_group_parent(a, group)
+    wt.ungroup(b)
+    nodes = wt.view()["nodes"]
+    assert nodes[shared]["parent"] in (a, b)
+    assert not nodes[shared].get("group_parent")
+
+
+def test_group_child_moves_when_member_leaves(wt: core.Core) -> None:
+    a = wt.place("aaaa0001", core.SUN)
+    b = wt.place("aaaa0002", core.SUN)
+    c = wt.stage(a, note="third member")
+    wt.move(c, core.SUN)
+    group = wt.group_siblings([a, b, c])
+    shared = wt.place("bbbb0001", a)
+    wt.set_group_parent(shared, group)
+    wt.unplace(a)
+    nodes = wt.view()["nodes"]
+    assert nodes[shared]["parent"] in (b, c)
+    assert nodes[shared]["group_parent"] == group
+    wt.set_group_parent(shared, None)
+    assert not wt.view()["nodes"][shared].get("group_parent")

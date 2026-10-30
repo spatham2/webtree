@@ -25,5 +25,6 @@ Requires `fastapi`, `uvicorn`, `textual` (`pip install -e .[test]`).
 | `WEBTREE_CLUSTER_SIMILARITY` | `0.3` |
 | `WEBTREE_SUMMARY_MODEL` | `haiku` |
 | `WEBTREE_REVIEWER_MODEL` | `opus` |
+| `WEBTREE_CLAUDE_CWD` (directory model calls run from; its `.claude/settings.json` supplies login/gateway) | the session's own cwd |
 
 Instantiate, pull (compacted levels), reviewers, and model cluster naming call the real `claude` CLI and cost tokens.

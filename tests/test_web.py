@@ -275,6 +275,20 @@ def test_side_by_side_group_endpoints(client: testclient.TestClient) -> None:
     c = client.post("/api/place", json={"session_id": "bbbb0001", "parent": a}).json()["node_id"]
     group = client.post("/api/groups", json={"node_ids": [a, b]}).json()["group_id"]
     assert client.get("/api/view").json()["nodes"][b]["group"] == group
-    assert client.post("/api/groups", json={"node_ids": [a, c]}).status_code == 400
+    assert client.post("/api/groups", json={"node_ids": [b, c]}).status_code == 200
+    assert client.get("/api/view").json()["nodes"][c]["parent"] == "sun"
     assert client.post(f"/api/nodes/{a}/ungroup").status_code == 200
-    assert client.get("/api/view").json()["nodes"][b]["group"] is None
+    assert client.post(f"/api/nodes/{c}/ungroup").status_code == 200
+    nodes = client.get("/api/view").json()["nodes"]
+    assert nodes[b]["group"] is None and nodes[c]["parent"] == a
+
+
+def test_group_parent_endpoint(client: testclient.TestClient) -> None:
+    a = client.post("/api/place", json={"session_id": "aaaa0001", "parent": "sun"}).json()["node_id"]
+    b = client.post("/api/place", json={"session_id": "aaaa0002", "parent": "sun"}).json()["node_id"]
+    c = client.post("/api/place", json={"session_id": "bbbb0001", "parent": a}).json()["node_id"]
+    group = client.post("/api/groups", json={"node_ids": [a, b]}).json()["group_id"]
+    assert client.post(f"/api/nodes/{c}/group_parent", json={"group_id": group}).status_code == 200
+    assert client.get("/api/view").json()["nodes"][c]["group_parent"] == group
+    assert client.post(f"/api/nodes/{a}/group_parent", json={"group_id": group}).status_code == 400
+    assert client.post(f"/api/nodes/{c}/group_parent", json={"group_id": None}).status_code == 200

@@ -165,7 +165,7 @@ class Core:
             reasons = [r for r, ok in (("same project", same_project), (f"topic {sim:.0%}", sim > 0)) if ok]
             scored.append({"parent": node_id, "title": s.title, "score": round(score, 3), "reasons": reasons})
         scored.sort(key=lambda x: x["score"], reverse=True)
-        sun_entry = {"parent": SUN, "title": "Sun (top level)", "score": 0.0, "reasons": ["new top-level topic"]}
+        sun_entry = {"parent": SUN, "title": "Head (top level)", "score": 0.0, "reasons": ["new top-level topic"]}
         return [*scored[: limit - 1], sun_entry]
 
     def place(self, session_id: str, parent: str) -> str:
@@ -175,7 +175,7 @@ class Core:
             if self._session_node_id(tree, session_id):
                 raise CoreError(f"session {session_id} is already placed")
             if parent != SUN and self._node(tree, parent)["kind"] != "planet":
-                raise CoreError("parent must be the sun or a planet")
+                raise CoreError("parent must be the head or a planet")
             parent_palette = tree["nodes"][parent].get("palette") if parent != SUN else None
             node_id = _new_id("p")
             tree["nodes"][node_id] = {
@@ -202,16 +202,21 @@ class Core:
                 ancestor = self._node(tree, ancestor)["parent"]
             if node["parent"] != parent:
                 self._drop_from_group(tree, node_id)
+                node.pop("grouped_from", None)
+                parent_group = tree["nodes"][parent].get("group") if parent != SUN else None
+                if node.get("group_parent") != parent_group:
+                    node.pop("group_parent", None)
             node["parent"] = parent
 
     def unplace(self, node_id: str) -> None:
         """Return a planet to the drop bin. Its children move up to its parent."""
         with self.store.transaction() as tree:
             node = self._node(tree, node_id)
+            self._drop_from_group(tree, node_id)
             for child in tree["nodes"].values():
                 if child.get("parent") == node_id:
                     child["parent"] = node["parent"]
-            self._drop_from_group(tree, node_id)
+                    child.pop("group_parent", None)
             del tree["nodes"][node_id]
             for cluster in tree["clusters"].values():
                 if node_id in cluster["members"]:
@@ -264,32 +269,89 @@ class Core:
         tree["nodes"][node_id]["group"] = None
         if not group:
             return
-        rest = [n for nid, n in tree["nodes"].items() if nid != node_id and n.get("group") == group]
+        rest = [nid for nid, n in tree["nodes"].items() if nid != node_id and n.get("group") == group]
+        group_kids = [n for n in tree["nodes"].values() if n.get("group_parent") == group]
         if len(rest) == 1:
-            rest[0]["group"] = None
+            tree["nodes"][rest[0]]["group"] = None
+            for kid in group_kids:
+                kid.pop("group_parent", None)
+            return
+        for kid in group_kids:
+            if kid["parent"] == node_id:
+                kid["parent"] = rest[0]
+
+    def set_group_parent(self, node_id: str, group_id: str | None) -> None:
+        """Make a node a child of a whole side-by-side group, or (None) of its individual parent planet."""
+        with self.store.transaction() as tree:
+            node = self._node(tree, node_id)
+            if group_id is None:
+                node.pop("group_parent", None)
+                return
+            members = sorted(
+                (nid for nid, n in tree["nodes"].items() if n.get("group") == group_id),
+                key=lambda nid: tree["nodes"][nid].get("created") or "",
+            )
+            if len(members) < 2:
+                raise CoreError(f"unknown side-by-side group {group_id}")
+            if node_id in members:
+                raise CoreError("a group member cannot be a child of its own group")
+            if any(self._is_ancestor(tree, node_id, m) for m in members):
+                raise CoreError("a node cannot be the child of a group below it")
+            if node["parent"] not in members:
+                self._drop_from_group(tree, node_id)
+                node.pop("grouped_from", None)
+                node["parent"] = members[0]
+            node["group_parent"] = group_id
+
+    def _is_ancestor(self, tree: dict, maybe_ancestor: str, node_id: str) -> bool:
+        current = tree["nodes"][node_id]["parent"]
+        while current != SUN:
+            if current == maybe_ancestor:
+                return True
+            current = self._node(tree, current)["parent"]
+        return False
 
     def group_siblings(self, node_ids: list[str]) -> str:
-        """Put 2+ siblings side by side on one shared branch. Returns the group id."""
+        """Put 2+ nodes side by side on one shared branch. Every node keeps its own descendants.
+
+        They share the first node's parent, unless that parent sits under another member; then they
+        share the topmost member's parent so no node ends up under its own descendant.
+        """
         if len(set(node_ids)) < 2:
             raise CoreError("a side-by-side group needs at least two nodes")
         with self.store.transaction() as tree:
             members = [self._node(tree, nid) for nid in node_ids]
-            if len({m["parent"] for m in members}) != 1:
-                raise CoreError("side-by-side nodes must share the same parent")
+            ids = set(node_ids)
+            target = members[0]["parent"]
+            while target != SUN and (target in ids or any(self._is_ancestor(tree, m, target) for m in ids)):
+                owner = target if target in ids else next(m for m in ids if self._is_ancestor(tree, m, target))
+                target = tree["nodes"][owner]["parent"]
             existing = [m["group"] for m in members if m.get("group")]
-            group_id = existing[0] if existing else _new_id("g")
-            for old in set(existing) - {group_id}:
-                for node in tree["nodes"].values():
-                    if node.get("group") == old:
-                        node["group"] = group_id
-            for member in members:
+            group_id = members[0].get("group") or (existing[0] if existing else _new_id("g"))
+            for nid, member in zip(node_ids, members):
+                if member["parent"] != target:
+                    self._drop_from_group(tree, nid)
+                    member.setdefault("grouped_from", member["parent"])
+                    member["parent"] = target
+                old = member.get("group")
+                if old and old != group_id:
+                    for node in tree["nodes"].values():
+                        if node.get("group") == old:
+                            node["group"] = group_id
+                        if node.get("group_parent") == old:
+                            node["group_parent"] = group_id
                 member["group"] = group_id
         return group_id
 
     def ungroup(self, node_id: str) -> None:
-        """Take one node out of its side-by-side group."""
+        """Take one node out of its side-by-side group, returning it to where it was grouped from."""
         with self.store.transaction() as tree:
+            node = self._node(tree, node_id)
             self._drop_from_group(tree, node_id)
+            origin = node.pop("grouped_from", None)
+            if origin and (origin == SUN or origin in tree["nodes"]):
+                if origin == SUN or not self._is_ancestor(tree, node_id, origin) and origin != node_id:
+                    node["parent"] = origin
 
     def instantiate(self, node_id: str, palette: str | None = None) -> str:
         """Run the cloud's branch method and turn it into a planet. Returns the new session id."""
@@ -455,16 +517,18 @@ class Core:
         """Ask the summary model for a 5-10 word name from member topic names."""
         tree = self.store.load()
         all_sessions = self.list_sessions()
-        titles = [
-            all_sessions[tree["nodes"][m]["session_id"]].title
+        members = [
+            all_sessions[tree["nodes"][m]["session_id"]]
             for m in self._cluster(tree, cluster_id)["members"]
             if tree["nodes"][m].get("session_id") in all_sessions
         ]
+        titles = [s.title for s in members]
         prompt = (
             "Give a name of 5 to 10 words that captures what all these sessions are about. "
             "Reply with only the name.\n\n" + "\n".join(f"- {t}" for t in titles)
         )
-        reply = self._ask(prompt, "", self.cfg.summary_model).strip().strip('"')
+        cwd = next((s.cwd for s in members if s.cwd), None)
+        reply = self._ask(prompt, "", self.cfg.summary_model, cwd).strip().strip('"')
         words = (reply.splitlines()[0] if reply else "").strip(' ."').split()[:10]
         name = " ".join(words) if len(words) >= 5 else self.heuristic_cluster_name(titles)
         self.rename_cluster(cluster_id, name)
@@ -473,8 +537,16 @@ class Core:
     # ----- summaries and pulls -----
 
     def _ask(self, instruction: str, stdin_text: str, model: str, cwd: str | None = None) -> str:
-        args = ["-p", "--model", model, "--no-session-persistence", "--tools", "", instruction]
-        return claude_cli.run(self.cfg.claude_bin, args, cwd, stdin=stdin_text)
+        args = ["-p", "--tools", "", "--model", model, "--no-session-persistence", instruction]
+        try:
+            return claude_cli.run(self.cfg.claude_bin, args, self.cfg.claude_cwd or cwd, stdin=stdin_text)
+        except claude_cli.ClaudeError as exc:
+            hint = (
+                " (set WEBTREE_CLAUDE_CWD to a directory whose Claude settings can log in)"
+                if "logged in" in str(exc)
+                else ""
+            )
+            raise CoreError(f"{exc}{hint}") from exc
 
     def _summary_path(self, s: sessions_mod.Session, level: str) -> pathlib.Path:
         return self.cfg.summaries_dir / f"{s.session_id}.{level}.{s.file_size}.md"
@@ -496,7 +568,7 @@ class Core:
             if cache.is_file():
                 return cache.read_text()
             transcript = sessions_mod.render_transcript(s.path)[-TRANSCRIPT_CHAR_LIMIT:]
-            text = self._ask(SUMMARY_PROMPTS[level], transcript, self.cfg.summary_model).strip()
+            text = self._ask(SUMMARY_PROMPTS[level], transcript, self.cfg.summary_model, s.cwd).strip()
             cache.parent.mkdir(parents=True, exist_ok=True)
             for old in cache.parent.glob(f"{session_id}.{level}.*.md"):
                 old.unlink()

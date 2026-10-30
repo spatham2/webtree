@@ -17,6 +17,7 @@ class Config:
     claude_dir: pathlib.Path
     data_dir: pathlib.Path
     claude_bin: str
+    claude_cwd: str | None
     context_window: int
     cluster_min: int
     cluster_similarity: float
@@ -50,6 +51,7 @@ class Config:
             claude_dir=claude_dir,
             data_dir=_env_path("WEBTREE_HOME", claude_dir / "webtree"),
             claude_bin=os.environ.get("WEBTREE_CLAUDE_BIN", "claude"),
+            claude_cwd=os.environ.get("WEBTREE_CLAUDE_CWD") or None,
             context_window=int(os.environ.get("WEBTREE_CONTEXT_WINDOW", "1000000")),
             cluster_min=int(os.environ.get("WEBTREE_CLUSTER_MIN", "10")),
             cluster_similarity=float(os.environ.get("WEBTREE_CLUSTER_SIMILARITY", "0.3")),
