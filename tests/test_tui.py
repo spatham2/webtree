@@ -42,7 +42,8 @@ async def wait_until(pilot: pilot_mod.Pilot, condition: Callable[[], bool], time
 
 def side_plain(app: tui.WebTreeApp) -> str:
     con = console.Console(width=200, record=True, file=io.StringIO())
-    con.print(app.query_one("#side", widgets.Static).renderable)
+    side = app.query_one("#side", widgets.Static)
+    con.print(getattr(side, "content", None) or side.renderable)
     return con.export_text()
 
 

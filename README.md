@@ -2,16 +2,26 @@
 
 Constellation GUI and terminal UI for branching Claude Code sessions. Spec: `DESIGN.md`.
 
+## Install
+
+```
+git clone <repo-url> webtree && cd webtree
+./install.sh            # Python 3.11+: private venv in ~/.local/share/webtree, `webtree` in ~/.local/bin
+./install.sh --docker   # no local Python needed: builds the `webtree` image and a `webtree` wrapper
+```
+
+No venv activation needed afterwards. The Docker wrapper mounts `$HOME` at the same path (so `~/.claude` and session
+directories resolve), runs as your user, and forwards `WEBTREE_*` / `ANTHROPIC_*` variables. Set `WEBTREE_PORT` to
+change the web port.
+
 ## Run
 
 ```
-cd ~/devel/webtree
-python3 -m webtree          # terminal UI
-python3 -m webtree web      # web GUI at http://127.0.0.1:8765
-python3 -m pytest -q        # tests (fake claude, no real sessions touched)
+webtree                 # terminal UI
+webtree web             # web GUI at http://127.0.0.1:8765
 ```
 
-Requires `fastapi`, `uvicorn`, `textual` (`pip install -e .[test]`).
+Tests (native install): `~/.local/share/webtree/venv/bin/python -m pytest -q` (fake claude, no real sessions touched).
 
 ## Settings (environment variables)
 

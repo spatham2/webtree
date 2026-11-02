@@ -368,7 +368,7 @@ def create_app(wt: core.Core) -> fastapi.FastAPI:
     return app
 
 
-def serve(port: int) -> None:
-    """Serve the web GUI on 127.0.0.1 only."""
+def serve(port: int, host: str = "127.0.0.1") -> None:
+    """Serve the web GUI; requests must still address it as localhost."""
     print(f"Web Tree: http://127.0.0.1:{port}/")
-    uvicorn.run(create_app(core.Core()), host="127.0.0.1", port=port, log_level="warning")
+    uvicorn.run(create_app(core.Core()), host=host, port=port, log_level="warning")
