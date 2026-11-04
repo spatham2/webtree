@@ -1,4 +1,4 @@
-"""The sun: overall and per-project Claude memory."""
+"""The head: overall and per-project Codex configuration and instructions."""
 
 import dataclasses
 import hashlib
@@ -32,24 +32,31 @@ def _read(group: str, path: pathlib.Path) -> SunFile:
     return SunFile(group, str(path), False, 0, "")
 
 
-def overall_layer(claude_dir: pathlib.Path) -> list[SunFile]:
+def overall_layer(codex_dir: pathlib.Path) -> list[SunFile]:
     """Files that apply to every session."""
-    return [_read("config", claude_dir / "settings.json"), _read("instructions", claude_dir / "CLAUDE.md")]
+    files = [_read("config", codex_dir / "config.toml"), _read("instructions", codex_dir / "AGENTS.md")]
+    override = codex_dir / "AGENTS.override.md"
+    if override.is_file():
+        files.append(_read("instructions override", override))
+    return files
 
 
-def project_layer(claude_dir: pathlib.Path, project: str, cwd: str = "") -> list[SunFile]:
-    """Files that apply to sessions in one project."""
+def project_layer(project: str, cwd: str = "") -> list[SunFile]:
+    """AGENTS.md files Codex loads for a session: from the project root down to its cwd."""
+    root = pathlib.Path(project)
+    if not root.is_dir():
+        return []
+    here = pathlib.Path(cwd) if cwd else root
+    chain = [root]
+    if here != root and root in here.parents:
+        chain += [p for p in reversed(here.parents) if root in p.parents] + [here]
     files = []
-    memory_dir = claude_dir / "projects" / project / "memory"
-    index = memory_dir / "MEMORY.md"
-    if index.is_file():
-        files.append(_read("memory index", index))
-    if memory_dir.is_dir():
-        files.extend(_read("memory", path) for path in sorted(memory_dir.glob("*.md")) if path.name != "MEMORY.md")
-    if cwd:
-        repo_claude = pathlib.Path(cwd) / "CLAUDE.md"
-        if repo_claude.is_file():
-            files.append(_read("repo instructions", repo_claude))
+    for directory in chain:
+        for name in ("AGENTS.override.md", "AGENTS.md"):
+            path = directory / name
+            if path.is_file():
+                files.append(_read("repo instructions", path))
+                break
     return files
 
 

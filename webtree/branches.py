@@ -1,10 +1,9 @@
 """Branch method plugins. v1 ships only `fork`."""
 
 import dataclasses
-import pathlib
 from typing import Protocol
 
-from webtree import claude_cli
+from webtree import codex_cli
 
 FORK_PROMPT = "This session was forked by Web Tree. Reply with only the word: ready."
 
@@ -15,13 +14,12 @@ class BranchRequest:
 
     parent_session_id: str
     parent_cwd: str
-    project_dir: pathlib.Path
     note: str
-    claude_bin: str
+    codex_bin: str
 
 
 class BranchMethod(Protocol):
-    """Start a new session from a parent. The new id is found by directory diff."""
+    """Start a new session from a parent. The new id is found by diffing the sessions directory."""
 
     name: str
 
@@ -29,17 +27,13 @@ class BranchMethod(Protocol):
 
 
 class ForkMethod:
-    """`claude --resume <parent> --fork-session`, run non-interactively once to create the file."""
+    """`codex exec fork <parent> <prompt>`, run once non-interactively to create the new rollout."""
 
     name = "fork"
 
     def start(self, request: BranchRequest) -> None:
         prompt = f"{FORK_PROMPT}\n\nIntent for this branch: {request.note}" if request.note else FORK_PROMPT
-        claude_cli.run(
-            request.claude_bin,
-            ["-p", "--resume", request.parent_session_id, "--fork-session", prompt],
-            request.parent_cwd,
-        )
+        codex_cli.run(request.codex_bin, ["exec", "fork", request.parent_session_id, prompt], request.parent_cwd)
 
 
 METHODS: dict[str, BranchMethod] = {"fork": ForkMethod()}

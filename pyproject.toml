@@ -1,7 +1,7 @@
 [project]
 name = "webtree"
 version = "0.1.0"
-description = "Constellation GUI and CLI for branching Claude Code sessions"
+description = "Constellation GUI and CLI for branching Codex CLI sessions"
 requires-python = ">=3.11"
 dependencies = ["fastapi", "uvicorn", "textual"]
 

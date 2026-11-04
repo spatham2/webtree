@@ -12,7 +12,7 @@ if [ "${1:-}" = "--docker" ]; then
 port="${WEBTREE_PORT:-8765}"
 flags=(--rm -i --user "$(id -u):$(id -g)" -e HOME="$HOME" -v "$HOME:$HOME" -w "$PWD")
 [ -t 0 ] && [ -t 1 ] && flags+=(-t)
-for v in $(compgen -e | grep -E '^(WEBTREE_|ANTHROPIC_)'); do flags+=(-e "$v"); done
+for v in $(compgen -e | grep -E '^(WEBTREE_|CODEX_|OPENAI_)'); do flags+=(-e "$v"); done
 if [ "${1:-}" = "web" ]; then
   flags+=(-p "127.0.0.1:$port:$port")
   set -- "$@" --host 0.0.0.0 --port "$port"

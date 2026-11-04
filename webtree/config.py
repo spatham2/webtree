@@ -12,12 +12,11 @@ def _env_path(name: str, default: pathlib.Path) -> pathlib.Path:
 
 @dataclasses.dataclass(frozen=True)
 class Config:
-    """Locations of Claude state and Web Tree's own state."""
+    """Locations of Codex state and Web Tree's own state."""
 
-    claude_dir: pathlib.Path
+    codex_dir: pathlib.Path
     data_dir: pathlib.Path
-    claude_bin: str
-    claude_cwd: str | None
+    codex_bin: str
     context_window: int
     cluster_min: int
     cluster_similarity: float
@@ -25,8 +24,8 @@ class Config:
     reviewer_model: str
 
     @property
-    def projects_dir(self) -> pathlib.Path:
-        return self.claude_dir / "projects"
+    def sessions_dir(self) -> pathlib.Path:
+        return self.codex_dir / "sessions"
 
     @property
     def tree_path(self) -> pathlib.Path:
@@ -46,15 +45,15 @@ class Config:
 
     @classmethod
     def from_env(cls) -> "Config":
-        claude_dir = _env_path("WEBTREE_CLAUDE_DIR", pathlib.Path.home() / ".claude")
+        default_home = _env_path("CODEX_HOME", pathlib.Path.home() / ".codex")
+        codex_dir = _env_path("WEBTREE_CODEX_DIR", default_home)
         return cls(
-            claude_dir=claude_dir,
-            data_dir=_env_path("WEBTREE_HOME", claude_dir / "webtree"),
-            claude_bin=os.environ.get("WEBTREE_CLAUDE_BIN", "claude"),
-            claude_cwd=os.environ.get("WEBTREE_CLAUDE_CWD") or None,
-            context_window=int(os.environ.get("WEBTREE_CONTEXT_WINDOW", "1000000")),
+            codex_dir=codex_dir,
+            data_dir=_env_path("WEBTREE_HOME", codex_dir / "webtree"),
+            codex_bin=os.environ.get("WEBTREE_CODEX_BIN", "codex"),
+            context_window=int(os.environ.get("WEBTREE_CONTEXT_WINDOW", "272000")),
             cluster_min=int(os.environ.get("WEBTREE_CLUSTER_MIN", "10")),
             cluster_similarity=float(os.environ.get("WEBTREE_CLUSTER_SIMILARITY", "0.3")),
-            summary_model=os.environ.get("WEBTREE_SUMMARY_MODEL", "haiku"),
-            reviewer_model=os.environ.get("WEBTREE_REVIEWER_MODEL", "opus"),
+            summary_model=os.environ.get("WEBTREE_SUMMARY_MODEL", ""),
+            reviewer_model=os.environ.get("WEBTREE_REVIEWER_MODEL", ""),
         )

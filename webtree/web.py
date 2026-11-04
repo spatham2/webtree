@@ -15,7 +15,7 @@ from webtree import core, sessions
 STATIC_DIR = pathlib.Path(__file__).parent / "static"
 ALLOWED_HOSTS = frozenset({"127.0.0.1", "localhost"})
 CSRF_HEADER = "x-webtree"
-SUMMARY_LEVELS = ("brief", "compacted", "extra_compacted")
+SUMMARY_LEVELS = ("brief", "compacted", "extra_compacted", "purpose")
 
 
 class PlaceBody(pydantic.BaseModel):
@@ -101,6 +101,8 @@ class Jobs:
         self.wt = wt
         self._lock = threading.Lock()
         self._busy: dict[str, set[str]] = {"instantiate": set(), "model_name": set(), "reviews": set()}
+        self._purpose: set[str] = set()
+        self.purpose_errors: dict[str, tuple[int, str]] = {}
         self.threads: dict[str, threading.Thread] = {}
 
     def busy(self) -> dict[str, list[str]]:
@@ -123,6 +125,29 @@ class Jobs:
             return fn()
         finally:
             self.release(kind, key)
+
+    def start_purpose(self, session_id: str) -> bool:
+        """Generate a session's purpose title in the background; False if already running."""
+        with self._lock:
+            if session_id in self._purpose:
+                return False
+            self._purpose.add(session_id)
+        threading.Thread(target=self._purpose_worker, args=(session_id,), daemon=True).start()
+        return True
+
+    def _purpose_worker(self, session_id: str) -> None:
+        size = self.wt.session(session_id).file_size
+        try:
+            self.wt.summary(session_id, "purpose")
+        except Exception as exc:  # noqa: BLE001
+            with self._lock:
+                self.purpose_errors[session_id] = (size, str(exc))
+        else:
+            with self._lock:
+                self.purpose_errors.pop(session_id, None)
+        finally:
+            with self._lock:
+                self._purpose.discard(session_id)
 
     def start_review(self, review_id: str) -> None:
         self.claim("reviews", review_id)
@@ -185,8 +210,8 @@ def create_app(wt: core.Core) -> fastapi.FastAPI:
 
     @app.get("/api/pulse")
     def pulse() -> dict:
-        paths = wt.index.transcript_paths()
-        newest = max((p.stat().st_mtime for p in paths if p.exists()), default=0.0)
+        paths = [p for p in wt.index.stamp_paths() if p.exists()]
+        newest = max((p.stat().st_mtime for p in paths), default=0.0)
         return {"mtime": wt.store.mtime(), "busy": jobs.busy(), "sessions": f"{len(paths)}:{newest}"}
 
     @app.get("/api/sun")
@@ -222,6 +247,16 @@ def create_app(wt: core.Core) -> fastapi.FastAPI:
         if cached_only:
             return {"level": level, "summary": wt.cached_summary(session_id, level)}
         return {"level": level, "summary": wt.summary(session_id, level)}
+
+    @app.get("/api/sessions/{session_id}/purpose")
+    def session_purpose(session_id: str) -> dict:
+        text, current = wt.latest_summary(session_id, "purpose")
+        failed = jobs.purpose_errors.get(session_id)
+        if failed and failed[0] != wt.session(session_id).file_size:
+            failed = None
+        if not current and not failed:
+            jobs.start_purpose(session_id)
+        return {"purpose": text, "current": current, "error": failed[1] if failed else None}
 
     @app.get("/api/sessions/{session_id}/transcript")
     def session_transcript(session_id: str, max_chars: int = 20_000) -> dict:

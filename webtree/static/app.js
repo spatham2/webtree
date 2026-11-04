@@ -69,6 +69,8 @@
     reviewPrompts: {},
     suggest: {},
     stats: {},
+    purposes: {},
+    lastOpen: {},
     pending: {},
     panelSig: '',
     binSig: '',
@@ -187,7 +189,7 @@
   }
 
   function shortProject(p) {
-    return (p || '').replace(/^-home-[^-]+-?/, '~/').replace(/^~\/$/, '~');
+    return (p || '').replace(/^\/home\/[^/]+/, '~').replace(/^\/Users\/[^/]+/, '~');
   }
 
   function nodes() {
@@ -1186,6 +1188,8 @@
       state._dirty = true;
     } else if (d.kind === 'node' && (d.from.type === 'planet' || d.from.type === 'cluster')) {
       d.cur = [x, y];
+      d.overBin = d.moved && d.from.type === 'planet' && $('#bin').contains(e.target);
+      $('#bin').classList.toggle('drop-here', !!d.overBin);
       const t = d.moved ? hitTest(x, y, (hit) => isPlanetOrSun(hit) && hit.id !== d.from.id) : null;
       state.dropTarget = t && !(d.from.type === 'cluster' && t.type === 'sun') ? t : null;
     }
@@ -1198,16 +1202,25 @@
     if (!d) return;
     const target = state.dropTarget;
     state.dropTarget = null;
+    $('#bin').classList.remove('drop-here');
     if (d.kind === 'node') {
       if (!d.moved) onClick(d.from);
+      else if (d.overBin) unplaceToBin(d.from.id);
       else if (target) onNodeDrop(d.from, target);
     }
   });
 
+  function unplaceToBin(id) {
+    if (!confirm(`Move "${titleOf(id)}" back to the drop bin? Its children move up to its parent.`)) return;
+    act(() => api('POST', `/api/nodes/${enc(id)}/unplace`), 'Moved to drop bin').then(() => {
+      if (state.selected && state.selected.id === id) select(null);
+    });
+  }
+
   function copyResume(id) {
     const n = nodes()[id];
     if (!n || !n.session_id) return toast('Only planets have a session to resume');
-    copyText(`claude --resume ${n.session_id}`);
+    copyText(`codex resume ${n.session_id}`);
   }
 
   canvas.addEventListener('dblclick', (e) => {
@@ -1313,13 +1326,23 @@
             state.stats[n.session_id] = st;
             if (req === tipReq && state.hover === key) showTip(tipFor(hit), null);
           }).catch(() => {});
+          loadPurpose(n.session_id, key, hit, req, 0);
         }
       }
     } else if (hit) moveTip(e);
   }
 
+  function loadPurpose(sid, key, hit, req, attempt) {
+    api('GET', `/api/sessions/${enc(sid)}/purpose`).then((r) => {
+      state.purposes[sid] = r;
+      if (req !== tipReq || state.hover !== key) return;
+      showTip(tipFor(hit), null);
+      if (!r.current && !r.error && attempt < 10) setTimeout(() => loadPurpose(sid, key, hit, req, attempt + 1), 3000);
+    }).catch(() => {});
+  }
+
   function tipFor(hit) {
-    if (hit.type === 'sun') return [h('div', { class: 't' }, 'THE SUN'), h('div', null, 'Overall + per-project memory. Click to open.')];
+    if (hit.type === 'sun') return [h('div', { class: 't' }, 'THE HEAD'), h('div', null, 'Codex config + AGENTS.md instructions. Click to open.')];
     if (hit.type === 'cluster' || hit.type === 'cluster-label') {
       const c = clusters()[hit.id];
       return [h('div', { class: 't' }, c.name), h('div', null, `${c.members.length} planets in ${shortProject(c.project)}`), h('div', { class: 'n' }, 'click to open; drag onto a planet to pull')];
@@ -1336,12 +1359,16 @@
     }
     if (n.missing) return [h('div', { class: 't' }, titleOf(n.id)), h('div', null, 'transcript missing')];
     const st = state.stats[n.session_id] || n.session || {};
+    const pp = state.purposes[n.session_id];
     return [
       h('div', { class: 't' }, titleOf(n.id)),
+      pp && pp.purpose ? h('div', { class: 'p' }, pp.purpose) : null,
+      pp && pp.error ? h('div', { style: 'color:var(--c8)' }, 'purpose failed: ' + pp.error.slice(0, 200)) : null,
+      !pp || (!pp.purpose && !pp.error) ? h('div', { class: 'n' }, 'summarizing purpose...') : null,
       h('div', null, `Lifetime tokens: ${fmtTokens(st.lifetime_tokens)}`),
       h('div', null, `Transcript: ${fmtMB(st.file_size)}`),
       h('div', null, `Context: ${st.context_pct !== undefined ? st.context_pct : n.context_pct}% (${(st.tier_name || n.tier_name || '').toUpperCase()})`),
-      n.sun_drift ? h('div', { style: 'color:var(--c9)' }, 'memory changed since creation') : null,
+      n.sun_drift ? h('div', { style: 'color:var(--c9)' }, 'instructions changed since creation') : null,
     ];
   }
 
@@ -1478,6 +1505,15 @@
     return h('div', null, sm.text);
   }
 
+  function lastMessage(sid, text) {
+    const open = !!state.lastOpen[sid];
+    return h('div', {
+      class: 'last-msg' + (open ? ' open' : ''),
+      title: open ? 'click to collapse' : 'click to expand',
+      onclick: () => { state.lastOpen[sid] = !open; renderPanel(true); },
+    }, text);
+  }
+
   function planetPanel(n) {
     const s = n.session || {};
     const v = state.view;
@@ -1491,6 +1527,7 @@
     ];
     if (n.missing) out.push(h('div', { class: 'error' }, 'Transcript file is missing.'));
     if (s.session_id) out.push(h('h3', null, 'Summary'), summarySection(s.session_id));
+    if (s.last_message) out.push(h('h3', null, `Last message (${s.last_role})`), lastMessage(n.session_id, s.last_message));
     out.push(
       h('h3', null, 'Details'),
       kv([
@@ -1509,7 +1546,7 @@
       ]),
     );
     if (n.sun_drift) {
-      out.push(h('div', { class: 'warn' }, 'Head drift: this session predates changes to its memory (overall or project layer changed since it was created).'));
+      out.push(h('div', { class: 'warn' }, 'Head drift: this session predates changes to its instructions (config.toml or AGENTS.md changed since it was created).'));
     }
     out.push(h('div', { class: 'row' }, h('span', { class: 'link', onclick: () => { state.focusPlanet = n.id; select({ type: 'sun', id: 'sun' }); } }, 'Show what this session loads (sun)')));
 
@@ -1529,7 +1566,7 @@
       ),
       h('div', { class: 'row' },
         h('button', { disabled: !live, onclick: () => act(async () => copyText((await api('GET', `/api/nodes/${enc(n.id)}/open_command`)).command)) }, 'Copy open-in-terminal'),
-        h('button', { class: 'danger', onclick: () => confirm('Return this planet to the drop bin? Its children move up to its parent.') && act(() => api('POST', `/api/nodes/${enc(n.id)}/unplace`), 'Unplaced').then(() => select(null)) }, 'Unplace'),
+        h('button', { class: 'danger', onclick: () => unplaceToBin(n.id) }, 'Move to drop bin'),
       ),
       ...sideBySideSection(n),
     );
@@ -1632,7 +1669,7 @@
       h('h3', null, 'Instantiate'),
     );
     out.push(...sideBySideSection(n));
-    if (working) out.push(h('div', null, h('span', { class: 'spin' }), 'Starting forked conversation (claude --resume --fork-session)...'));
+    if (working) out.push(h('div', null, h('span', { class: 'spin' }), 'Starting forked conversation (codex exec fork)...'));
     out.push(h('div', { class: 'row' },
       h('button', { class: 'primary', disabled: !!working, onclick: () => instantiate(n.id, palette) }, 'Instantiate conversation'),
       h('button', { class: 'danger', disabled: !!working, onclick: () => act(() => api('POST', `/api/nodes/${enc(n.id)}/discard`), 'Discarded').then(() => select(null)) }, 'Discard'),
@@ -2142,7 +2179,7 @@
     wrap.replaceChildren(...items.map((b) => {
       const el = h('div', { class: 'bin-item', draggable: 'true', 'data-sid': b.session_id },
         h('div', { class: 't' }, b.title),
-        h('div', { class: 'm' }, `${shortProject(b.project)} - ${fmtDate(b.created)}`),
+        h('div', { class: 'm' }, `${shortProject(b.project)} - ${fmtDate(b.created)} - ${b.session_id.slice(0, 8)}`),
         h('div', { class: 'm' }, `${b.context_pct}% ctx - ${fmtMB(b.file_size)}`),
         h('div', { class: 'sugg' }, h('span', { class: 'muted' }, '...')));
       el.addEventListener('dragstart', (e) => {

@@ -5,6 +5,7 @@ import functools
 import os
 import shutil
 import subprocess
+import textwrap
 from collections.abc import Callable
 
 from rich import console, table, text
@@ -18,6 +19,7 @@ TIER_MARKERS = {1: "●", 2: "◉", 3: "⬤"}
 STATUS_STYLES = {"pending": "color(11)", "running": "color(14)", "done": "color(10)", "error": "color(9)"}
 LEVEL_LABELS = {"full": "Full transcript", "compacted": "Compacted (default)", "extra_compacted": "Extra-compacted"}
 SIGNAL_LABELS = {"planet_size": "Planet size tier markers", "jupiter_badge": "Badge at Jupiter tier"}
+LAST_MESSAGE_PREVIEW = 240
 Key = tuple[str, str]
 SUN_KEY: Key = ("sun", core.SUN)
 
@@ -111,6 +113,7 @@ def bin_label(entry: dict) -> text.Text:
     label.append(f" {entry.get('context_pct', 0):.0f}% ", style="dim")
     label.append(entry["title"])
     label.append(f"  {short_time(entry['created'])[5:]}", style="dim")
+    label.append(f" {entry['session_id'][:8]}", style="dim")
     return label
 
 
@@ -233,7 +236,7 @@ class ChoiceModal(screen.ModalScreen[str | None]):
         with containers.Vertical(classes="dialog"):
             yield widgets.Label(self._title, classes="dialog-title")
             if self._body:
-                yield widgets.Static(self._body)
+                yield widgets.Static(self._body, markup=False)
             yield NavList(*[option_list.Option(label, id=oid) for oid, label in self._options], id="choices")
 
     def on_mount(self) -> None:
@@ -344,7 +347,7 @@ class WebTreeApp(app.App[None]):
         binding.Binding("c", "palette", "Palette"),
         binding.Binding("n", "note", "Note"),
         binding.Binding("b", "focus_bin", "Bin"),
-        binding.Binding("u", "unplace", "Unplace"),
+        binding.Binding("u", "unplace", "To bin"),
         binding.Binding("m", "move", "Move"),
         binding.Binding("g", "side_by_side", "Group"),
         binding.Binding("a", "attach", "Attach to group"),
@@ -418,10 +421,8 @@ class WebTreeApp(app.App[None]):
     # ----- loading and rendering -----
 
     def _projects_stamp(self) -> tuple:
-        projects = self.wt.cfg.projects_dir
         try:
-            entries = [(e.name, e.stat().st_mtime) for e in os.scandir(projects) if e.is_dir()]
-            return (projects.stat().st_mtime, tuple(sorted(entries)))
+            return tuple((str(p), p.stat().st_mtime) for p in self.wt.index.stamp_paths() if p.exists())
         except OSError:
             return ()
 
@@ -658,7 +659,9 @@ class WebTreeApp(app.App[None]):
                 rows.append(("Error", text.Text(item["error"], style="color(9)")))
         if session:
             drift = (
-                text.Text("drifted: predates current memory", style="color(11)") if item.get("sun_drift") else "in sync"
+                text.Text("drifted: predates current instructions", style="color(11)")
+                if item.get("sun_drift")
+                else "in sync"
             )
             rows.append(("Head", drift))
             rows.append(("Loads", f"overall layer + project {session['project']}"))
@@ -670,6 +673,9 @@ class WebTreeApp(app.App[None]):
         if item.get("missing"):
             rows.append(("Missing", text.Text("transcript not found", style="color(9)")))
         parts.append(self._grid(rows))
+        if session and session.get("last_message"):
+            parts.append(text.Text(f"\nLast message ({session['last_role']})", style="bold"))
+            parts.append(text.Text(textwrap.shorten(session["last_message"], LAST_MESSAGE_PREVIEW), style="dim"))
         pulls_in = [p for p in self.data["pulls"] if p["target"] == nid]
         pulls_out = [p for p in self.data["pulls"] if p["source"] == nid]
         parts.append(text.Text("\nPulls in", style="bold"))
@@ -769,7 +775,7 @@ class WebTreeApp(app.App[None]):
             parts.append(text.Text(header, style="bold reverse color(10)" if highlighted else "bold dim"))
             files = view["projects"][project]
             if not files:
-                parts.append(text.Text("  (no memory files)", style="dim"))
+                parts.append(text.Text("  (no AGENTS.md files)", style="dim"))
             for f in files:
                 parts.append(self._sun_file_line(f, highlighted))
         return console.Group(*parts)
@@ -871,10 +877,10 @@ class WebTreeApp(app.App[None]):
         self.push_screen(TextModal(title, prompt, hint))
 
     def resume_command(self, key: Key) -> str | None:
-        """`claude --resume <id>` for a planet row, else None."""
+        """`codex resume <id>` for a planet row, else None."""
         kind, ref = key
         session_id = self.data["nodes"].get(ref, {}).get("session_id") if kind == "node" else None
-        return f"{self.wt.cfg.claude_bin} --resume {session_id}" if session_id else None
+        return f"{self.wt.cfg.codex_bin} resume {session_id}" if session_id else None
 
     def copy_resume(self, key: Key) -> None:
         command = self.resume_command(key)

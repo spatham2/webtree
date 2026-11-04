@@ -6,22 +6,27 @@ import shlex
 import threading
 import uuid
 
-from webtree import branches, claude_cli, config, palettes, store, sun, topics
+from webtree import branches, codex_cli, config, palettes, store, sun, topics
 from webtree import sessions as sessions_mod
 
 SUN = "sun"
 LEVELS = ("full", "compacted", "extra_compacted")
 SUMMARY_PROMPTS = {
     "compacted": (
-        "Summarize this Claude Code conversation so another session can use it as context. Keep goals, decisions, "
+        "Summarize this Codex conversation so another session can use it as context. Keep goals, decisions, "
         "file paths, commands, open problems, and current state. Use terse bullets. At most 600 words."
     ),
     "extra_compacted": (
-        "Summarize this Claude Code conversation in at most 120 words: the goal, key decisions, and current state."
+        "Summarize this Codex conversation in at most 120 words: the goal, key decisions, and current state."
     ),
-    "brief": "In one sentence of at most 30 words, say what this Claude Code conversation is about.",
+    "brief": "In one sentence of at most 30 words, say what this Codex conversation is about.",
+    "purpose": (
+        "Write a 5 to 10 word title stating this Codex conversation's purpose and what it has done. "
+        "Output only the title, no quotes or trailing period."
+    ),
 }
 TRANSCRIPT_CHAR_LIMIT = 400_000
+PURPOSE_CHAR_LIMIT = 100_000
 REVIEW_PROMPT = (
     "You are an outside reviewer brought in because the working session may be stuck in its own framing. "
     "Attack the problem below: find flaws, missed alternatives, and wrong assumptions, and propose better "
@@ -47,7 +52,7 @@ class Core:
     def __init__(self, cfg: config.Config | None = None) -> None:
         self.cfg = cfg or config.Config.from_env()
         self.store = store.TreeStore(self.cfg.tree_path)
-        self.index = sessions_mod.SessionIndex(self.cfg.projects_dir)
+        self.index = sessions_mod.SessionIndex(self.cfg.codex_dir)
         self._summary_locks: dict[tuple[str, str], threading.Lock] = {}
         self._locks_guard = threading.Lock()
 
@@ -78,7 +83,7 @@ class Core:
         return next((nid for nid, n in tree["nodes"].items() if n.get("session_id") == session_id), None)
 
     def _sun_files(self, project: str, cwd: str) -> list[sun.SunFile]:
-        return sun.overall_layer(self.cfg.claude_dir) + sun.project_layer(self.cfg.claude_dir, project, cwd)
+        return sun.overall_layer(self.cfg.codex_dir) + sun.project_layer(project, cwd)
 
     def sun_view(self, project: str | None = None, include_content: bool = False) -> dict:
         """Overall layer plus one section per project (or only `project`)."""
@@ -89,18 +94,16 @@ class Core:
                 cwd_by_project.setdefault(s.project, s.cwd)
         projects = [project] if project else sorted({s.project for s in all_sessions.values()})
         return {
-            "overall": [f.to_dict(include_content) for f in sun.overall_layer(self.cfg.claude_dir)],
+            "overall": [f.to_dict(include_content) for f in sun.overall_layer(self.cfg.codex_dir)],
             "projects": {
-                p: [
-                    f.to_dict(include_content)
-                    for f in sun.project_layer(self.cfg.claude_dir, p, cwd_by_project.get(p, ""))
-                ]
+                p: [f.to_dict(include_content) for f in sun.project_layer(p, cwd_by_project.get(p, ""))]
                 for p in projects
             },
         }
 
     def session_stats(self, s: sessions_mod.Session) -> dict:
-        pct = 100.0 * s.context_tokens / self.cfg.context_window if self.cfg.context_window else 0.0
+        window = s.context_window or self.cfg.context_window
+        pct = 100.0 * s.context_tokens / window if window else 0.0
         tier = palettes.tier_for(pct)
         return {"context_pct": round(pct, 1), "tier": tier["tier"], "tier_name": tier["name"]}
 
@@ -360,17 +363,14 @@ class Core:
         if cloud["kind"] != "cloud":
             raise CoreError("only clouds can be instantiated")
         parent = self.session(self._node(tree, cloud["parent"])["session_id"])
-        project_dir = self.cfg.projects_dir / parent.project
-        before = claude_cli.list_transcripts(project_dir)
-        request = branches.BranchRequest(
-            parent.session_id, parent.cwd, project_dir, cloud.get("note", ""), self.cfg.claude_bin
-        )
+        before = codex_cli.list_sessions(self.cfg.sessions_dir)
+        request = branches.BranchRequest(parent.session_id, parent.cwd, cloud.get("note", ""), self.cfg.codex_bin)
         try:
             branches.METHODS[cloud["method"]].start(request)
-        except claude_cli.ClaudeError as exc:
+        except codex_cli.CodexError as exc:
             self._set_cloud_error(node_id, str(exc))
             raise CoreError(str(exc)) from exc
-        new = claude_cli.list_transcripts(project_dir) - before
+        new = codex_cli.list_sessions(self.cfg.sessions_dir) - before
         if len(new) != 1:
             message = f"expected 1 new session file, found {len(new)}; node left as a cloud"
             self._set_cloud_error(node_id, message)
@@ -420,7 +420,7 @@ class Core:
         if not node.get("session_id"):
             raise CoreError("clouds have no session yet")
         s = self.session(node["session_id"])
-        return f"cd {shlex.quote(s.cwd or str(pathlib.Path.home()))} && {self.cfg.claude_bin} --resume {s.session_id}"
+        return f"cd {shlex.quote(s.cwd or str(pathlib.Path.home()))} && {self.cfg.codex_bin} resume {s.session_id}"
 
     # ----- clusters -----
 
@@ -537,15 +537,11 @@ class Core:
     # ----- summaries and pulls -----
 
     def _ask(self, instruction: str, stdin_text: str, model: str, cwd: str | None = None) -> str:
-        args = ["-p", "--tools", "", "--model", model, "--no-session-persistence", instruction]
+        args = ["exec", "--ephemeral", "--sandbox", "read-only", *(["--model", model] if model else []), instruction]
         try:
-            return claude_cli.run(self.cfg.claude_bin, args, self.cfg.claude_cwd or cwd, stdin=stdin_text)
-        except claude_cli.ClaudeError as exc:
-            hint = (
-                " (set WEBTREE_CLAUDE_CWD to a directory whose Claude settings can log in)"
-                if "logged in" in str(exc)
-                else ""
-            )
+            return codex_cli.run(self.cfg.codex_bin, args, cwd, stdin=stdin_text)
+        except codex_cli.CodexError as exc:
+            hint = " (run `codex login`)" if "login" in str(exc).lower() or "401" in str(exc) else ""
             raise CoreError(f"{exc}{hint}") from exc
 
     def _summary_path(self, s: sessions_mod.Session, level: str) -> pathlib.Path:
@@ -555,6 +551,14 @@ class Core:
         """Summary if already generated for the current transcript, else None. Never calls a model."""
         path = self._summary_path(self.session(session_id), level)
         return path.read_text() if path.is_file() else None
+
+    def latest_summary(self, session_id: str, level: str) -> tuple[str | None, bool]:
+        """Most recent cached summary, even if the transcript has grown since, and whether it is current."""
+        current = self._summary_path(self.session(session_id), level)
+        if current.is_file():
+            return current.read_text(), True
+        older = sorted(self.cfg.summaries_dir.glob(f"{session_id}.{level}.*.md"), key=lambda p: p.stat().st_mtime)
+        return (older[-1].read_text(), False) if older else (None, False)
 
     def summary(self, session_id: str, level: str) -> str:
         """Cached summary of a session's context window at `compacted`, `extra_compacted`, or `brief`."""
@@ -567,8 +571,13 @@ class Core:
             cache = self._summary_path(s, level)
             if cache.is_file():
                 return cache.read_text()
-            transcript = sessions_mod.render_transcript(s.path)[-TRANSCRIPT_CHAR_LIMIT:]
-            text = self._ask(SUMMARY_PROMPTS[level], transcript, self.cfg.summary_model, s.cwd).strip()
+            transcript = sessions_mod.render_transcript(s.path)
+            if level == "purpose" and len(transcript) > PURPOSE_CHAR_LIMIT:
+                half = PURPOSE_CHAR_LIMIT // 2
+                transcript = f"{transcript[:half]}\n...\n{transcript[-half:]}"
+            text = self._ask(
+                SUMMARY_PROMPTS[level], transcript[-TRANSCRIPT_CHAR_LIMIT:], self.cfg.summary_model, s.cwd
+            ).strip()
             cache.parent.mkdir(parents=True, exist_ok=True)
             for old in cache.parent.glob(f"{session_id}.{level}.*.md"):
                 old.unlink()
@@ -611,7 +620,9 @@ class Core:
                     "created": _now(),
                 }
             )
-        prompt = f"Read @{path} — context pulled from another session via Web Tree. Use it for the current task."
+        prompt = (
+            f"Read the file {path} — context pulled from another session via Web Tree. Use it for the current task."
+        )
         return {"id": pull_id, "file": str(path), "prompt": prompt, "chars": len(body)}
 
     # ----- reviewers -----
@@ -664,9 +675,9 @@ class Core:
                 text = self._ask(REVIEW_PROMPT, material, self.cfg.reviewer_model, target.cwd)
             else:
                 source = self.session(self._node(tree, review["reviewer"])["session_id"])
-                args = ["-p", "--resume", source.session_id, "--fork-session", "--no-session-persistence"]
-                text = claude_cli.run(self.cfg.claude_bin, [*args, f"{REVIEW_PROMPT}\n\n{material}"], source.cwd)
-        except (claude_cli.ClaudeError, CoreError, OSError) as exc:
+                args = ["exec", "--ephemeral", "--sandbox", "read-only", "fork", source.session_id]
+                text = codex_cli.run(self.cfg.codex_bin, [*args, f"{REVIEW_PROMPT}\n\n{material}"], source.cwd)
+        except (codex_cli.CodexError, CoreError, OSError) as exc:
             return self.fail_review(review_id, str(exc))
         path = self.cfg.reviews_dir / f"{review_id}.md"
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -677,4 +688,4 @@ class Core:
         review = next((r for r in self.store.load()["reviews"] if r["id"] == review_id), None)
         if not review or review["status"] != "done":
             raise CoreError("review is not done")
-        return f"An outside reviewer critiqued this problem. Read @{review['file']} and respond to its points."
+        return f"An outside reviewer critiqued this problem. Read the file {review['file']} and respond to its points."

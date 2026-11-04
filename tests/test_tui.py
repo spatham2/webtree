@@ -127,7 +127,7 @@ def test_instantiate_failure_shows_error(wt: core.Core, monkeypatch: pytest.Monk
     async def body() -> None:
         root = wt.place("aaaa0001", core.SUN)
         cloud = wt.stage(root, note="doomed")
-        monkeypatch.setenv("FAKE_CLAUDE_FAIL", "1")
+        monkeypatch.setenv("FAKE_CODEX_FAIL", "1")
         app = make_app(wt)
         async with app.run_test(size=(160, 50)) as pilot:
             await select_node(app, pilot, ("node", cloud))
@@ -267,7 +267,7 @@ def test_open_and_external_change_reload(wt: core.Core) -> None:
         async with app.run_test(size=(160, 50)) as pilot:
             await select_node(app, pilot, ("node", a))
             await pilot.press("enter")
-            assert opened and "--resume aaaa0001" in opened[0]
+            assert opened and " resume aaaa0001" in opened[0]
             other = core.Core(wt.cfg)
             other.place("bbbb0001", core.SUN)
             await wait_until(pilot, lambda: app.bin_list.option_count == 1)
@@ -285,7 +285,7 @@ def test_double_click_copies_resume_command(wt: core.Core) -> None:
             line = app._tnodes[("node", a)].line
             await pilot.click("#tree", offset=(8, line + 1), times=2)
             await wait_until(pilot, lambda: bool(copied))
-            assert copied[-1].endswith("--resume aaaa0001")
+            assert copied[-1].endswith(" resume aaaa0001")
             assert app.resume_command(tui.SUN_KEY) is None
 
     run(body)

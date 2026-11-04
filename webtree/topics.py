@@ -6,7 +6,7 @@ import re
 STOPWORDS = frozenset(
     "a an and are as at be by can do for from how i in is it me my of on or our so the this to up we what "
     "when where which why with you your please help make new add fix get use using need want into about "
-    "session conversation claude".split()
+    "session conversation codex".split()
 )
 
 

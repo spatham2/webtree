@@ -12,8 +12,10 @@ def test_sessions_parsed(wt: core.Core) -> None:
     s = all_sessions["bbbb0001"]
     assert s.title == "Build Webtree GUI"
     assert s.title_source == "custom"
-    assert s.context_tokens == 700_000
-    assert s.lifetime_tokens == 700_000
+    assert s.context_tokens == 200_000
+    assert s.lifetime_tokens == 200_000
+    assert s.model == "gpt-5.5-codex"
+    assert s.first_prompt == "Please work on gui"
     assert s.file_size > 0
 
 
@@ -56,13 +58,13 @@ def test_stage_and_instantiate_fork(wt: core.Core, tmp_path: pathlib.Path) -> No
     assert node["session_id"] == new_id
     assert node["palette"] == "red-purple"
     fork_call = conftest.calls(tmp_path)[-1]
-    assert "--fork-session" in fork_call and "aaaa0001" in fork_call
+    assert "fork" in fork_call and "aaaa0001" in fork_call
 
 
 def test_instantiate_failure_stays_cloud(wt: core.Core, monkeypatch: pytest.MonkeyPatch) -> None:
     root = wt.place("aaaa0001", core.SUN)
     cloud = wt.stage(root)
-    monkeypatch.setenv("FAKE_CLAUDE_FAIL", "1")
+    monkeypatch.setenv("FAKE_CODEX_FAIL", "1")
     with pytest.raises(core.CoreError):
         wt.instantiate(cloud)
     node = wt.view()["nodes"][cloud]
@@ -103,7 +105,7 @@ def test_clusters_by_topic_within_project(wt: core.Core) -> None:
         wt.rename_cluster(cluster, "too short")
 
 
-def test_pull_full_and_cluster(wt: core.Core) -> None:
+def test_pull_full_and_cluster(wt: core.Core, repo_a: str) -> None:
     a = wt.place("aaaa0001", core.SUN)
     b = wt.place("bbbb0001", core.SUN)
     result = wt.pull(a, b, "full")
@@ -113,7 +115,7 @@ def test_pull_full_and_cluster(wt: core.Core) -> None:
     compacted = wt.pull(a, b, "compacted")
     assert "FAKE OUTPUT" in pathlib.Path(compacted["file"]).read_text()
     c = wt.place("aaaa0002", core.SUN)
-    cluster = wt.create_cluster("-repo-a", "Flatsat power and battery emulator work", [a, c])
+    cluster = wt.create_cluster(repo_a, "Flatsat power and battery emulator work", [a, c])
     cluster_pull = wt.pull(cluster, b)
     assert "cluster" in pathlib.Path(cluster_pull["file"]).read_text()
     assert {p["level"] for p in wt.view()["pulls"]} == {"full", "compacted", "cluster_summary"}
@@ -137,17 +139,17 @@ def test_parallel_reviews(wt: core.Core) -> None:
     assert done1["file"] in wt.review_prompt(r1)
 
 
-def test_sun_layers(wt: core.Core) -> None:
+def test_sun_layers(wt: core.Core, repo_a: str, repo_b: str) -> None:
     view = wt.sun_view()
     assert [f["group"] for f in view["overall"]] == ["config", "instructions"]
-    assert any(f["path"].endswith("feedback_sol.md") for f in view["projects"]["-repo-a"])
-    assert view["projects"]["-repo-b"] == []
+    assert any(f["path"].endswith("AGENTS.md") for f in view["projects"][repo_a])
+    assert view["projects"][repo_b] == []
 
 
-def test_sun_drift(wt: core.Core, claude_home: pathlib.Path) -> None:
+def test_sun_drift(wt: core.Core, repo_a: str) -> None:
     a = wt.place("aaaa0001", core.SUN)
     assert wt.view()["nodes"][a]["sun_drift"] is False
-    (claude_home / "projects" / "-repo-a" / "memory" / "new.md").write_text("new memory")
+    (pathlib.Path(repo_a) / "AGENTS.md").write_text("changed instructions")
     assert wt.view()["nodes"][a]["sun_drift"] is True
 
 
@@ -173,14 +175,14 @@ def test_unknown_cluster_is_core_error(wt: core.Core) -> None:
 def test_review_summary_failure_marks_error(wt: core.Core, monkeypatch: pytest.MonkeyPatch) -> None:
     a = wt.place("aaaa0001", core.SUN)
     review = wt.start_review(a, "problem")
-    monkeypatch.setenv("FAKE_CLAUDE_FAIL", "1")
+    monkeypatch.setenv("FAKE_CODEX_FAIL", "1")
     assert wt.run_review(review)["status"] == "error"
 
 
-def test_model_cluster_name_trims_and_falls_back(wt: core.Core, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_model_cluster_name_trims_and_falls_back(wt: core.Core, monkeypatch: pytest.MonkeyPatch, repo_a: str) -> None:
     a = wt.place("aaaa0001", core.SUN)
     b = wt.place("aaaa0002", core.SUN)
-    cluster = wt.create_cluster("-repo-a", "Flatsat power and battery emulator work", [a, b])
+    cluster = wt.create_cluster(repo_a, "Flatsat power and battery emulator work", [a, b])
     monkeypatch.setattr(
         wt, "_ask", lambda *args, **kwargs: "one two three four five six seven eight nine ten eleven twelve"
     )
@@ -224,7 +226,7 @@ def test_group_any_planets_keeps_downstream(wt: core.Core) -> None:
 
 
 def test_ask_failure_is_core_error(wt: core.Core, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("FAKE_CLAUDE_FAIL", "1")
+    monkeypatch.setenv("FAKE_CODEX_FAIL", "1")
     with pytest.raises(core.CoreError):
         wt.summary("aaaa0001", "brief")
 
@@ -287,3 +289,42 @@ def test_group_child_moves_when_member_leaves(wt: core.Core) -> None:
     assert nodes[shared]["group_parent"] == group
     wt.set_group_parent(shared, None)
     assert not wt.view()["nodes"][shared].get("group_parent")
+
+
+def test_last_message_and_purpose(wt: core.Core, tmp_path: pathlib.Path) -> None:
+    s = wt.session("aaaa0001")
+    assert s.last_role == "assistant"
+    assert s.last_message.startswith("Working on ")
+    assert wt.latest_summary("aaaa0001", "purpose") == (None, False)
+    text = wt.summary("aaaa0001", "purpose")
+    assert wt.latest_summary("aaaa0001", "purpose") == (text, True)
+    with s.path.open("a") as handle:
+        handle.write("\n")
+    assert wt.latest_summary("aaaa0001", "purpose") == (text, False)
+
+
+def test_codex_commands(wt: core.Core, tmp_path: pathlib.Path) -> None:
+    root = wt.place("aaaa0001", core.SUN)
+    new_id = wt.instantiate(wt.stage(root))
+    fork = conftest.calls(tmp_path)[-1]
+    assert fork[:2] == ["exec", "--skip-git-repo-check"] and fork[fork.index("fork") + 1] == "aaaa0001"
+    assert wt.session(new_id).forked_from == "aaaa0001"
+    wt.summary("aaaa0001", "brief")
+    ask = conftest.calls(tmp_path)[-1]
+    assert ask[0] == "exec" and "--ephemeral" in ask and ["--sandbox", "read-only"] == ask[ask.index("--sandbox") :][:2]
+    assert wt.summary("aaaa0001", "brief").startswith("FAKE OUTPUT")
+    assert wt.open_command(root).endswith(" resume aaaa0001")
+
+
+def test_codex_rollout_parsing(wt: core.Core, codex_home: pathlib.Path, repo_a: str) -> None:
+    s = wt.session("aaaa0002")
+    assert s.project == repo_a
+    assert s.title == "Flatsat battery emulator"
+    assert s.git_branch == "main"
+    assert "environment_context" not in sessions.render_transcript(s.path)
+    assert "tool `shell`" in sessions.render_transcript(s.path)
+    nested = pathlib.Path(repo_a) / "sub" / "dir"
+    nested.mkdir(parents=True)
+    conftest.write_session(codex_home / "sessions", nested, "cccc0001", "nested", created="2026-10-05T00:00:00Z")
+    assert wt.session("cccc0001").project == repo_a
+    assert wt.session("cccc0001").title == "Please work on nested"

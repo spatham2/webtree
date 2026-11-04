@@ -184,6 +184,7 @@ pre {
 .bin-head { display: flex; gap: 8px; align-items: center; padding: 4px 8px; }
 .bin-title { color: var(--c9); font-weight: bold; letter-spacing: 2px; }
 .bin-head .hint { color: var(--c6); font-size: 11px; }
+#bin.drop-here { box-shadow: inset 0 0 0 3px var(--c14); }
 #bin-filter { width: 180px; padding: 0 4px; }
 #bin-items { flex: 1; display: flex; gap: 8px; overflow-x: auto; overflow-y: hidden; padding: 2px 8px 8px; }
 .bin-item {
@@ -219,6 +220,10 @@ pre {
 }
 #tip .t { color: var(--c10); font-weight: bold; }
 #tip .n { color: var(--c12); }
+#tip .p { color: var(--c7); font-style: italic; margin-bottom: 2px; }
+.last-msg { white-space: pre-wrap; cursor: pointer; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; line-clamp: 3; overflow: hidden; border-left: 2px solid var(--c5); padding-left: 6px; }
+.last-msg:hover { border-left-color: var(--c9); }
+.last-msg.open { display: block; -webkit-line-clamp: unset; line-clamp: unset; }
 
 #modal-back {
   position: fixed;

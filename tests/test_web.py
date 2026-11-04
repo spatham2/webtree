@@ -58,17 +58,17 @@ def test_view_pulse_and_bin(client: testclient.TestClient) -> None:
     assert client.get("/api/pulse").json()["mtime"] > 0
 
 
-def test_sun_view_and_file(client: testclient.TestClient, claude_home: pathlib.Path) -> None:
+def test_sun_view_and_file(client: testclient.TestClient, codex_home: pathlib.Path, repo_a: str, repo_b: str) -> None:
     sun = client.get("/api/sun").json()
     assert "content" not in sun["overall"][0]
-    assert set(sun["projects"]) == {"-repo-a", "-repo-b"}
-    one = client.get("/api/sun", params={"project": "-repo-a", "content": True}).json()
-    assert list(one["projects"]) == ["-repo-a"]
-    memory = str(claude_home / "projects" / "-repo-a" / "memory" / "feedback_sol.md")
-    found = client.get("/api/sun/file", params={"path": memory, "project": "-repo-a"}).json()
+    assert set(sun["projects"]) == {repo_a, repo_b}
+    one = client.get("/api/sun", params={"project": repo_a, "content": True}).json()
+    assert list(one["projects"]) == [repo_a]
+    agents = str(pathlib.Path(repo_a) / "AGENTS.md")
+    found = client.get("/api/sun/file", params={"path": agents, "project": repo_a}).json()
     assert found["content"] == "SOL means one line.\n"
-    settings = client.get("/api/sun/file", params={"path": str(claude_home / "settings.json")}).json()
-    assert "opus" in settings["content"]
+    settings = client.get("/api/sun/file", params={"path": str(codex_home / "config.toml")}).json()
+    assert "gpt-5.5-codex" in settings["content"]
     assert client.get("/api/sun/file", params={"path": "/etc/passwd"}).status_code == 404
 
 
@@ -77,7 +77,7 @@ def test_session_preview_stats_transcript_summary(client: testclient.TestClient)
     assert preview["title"] == "Build Webtree GUI"
     assert preview["summaries"]["brief"] is None
     stats = client.get("/api/sessions/bbbb0001/stats").json()
-    assert stats["lifetime_tokens"] == 700_000
+    assert stats["lifetime_tokens"] == 200_000
     assert stats["tier_name"] == "jupiter"
     assert stats["file_size_mb"] >= 0
     transcript = client.get("/api/sessions/aaaa0001/transcript").json()
@@ -122,7 +122,7 @@ def test_clouds_stage_update_discard_instantiate(client: testclient.TestClient, 
     assert node["kind"] == "planet"
     assert node["session_id"] == response.json()["session_id"]
     assert node["palette"] == "red-purple"
-    assert "--fork-session" in conftest.calls(tmp_path)[-1]
+    assert "fork" in conftest.calls(tmp_path)[-1]
     other = client.post(f"/api/nodes/{root}/stage", json={}).json()["node_id"]
     assert client.post(f"/api/nodes/{other}/discard").status_code == 200
     assert other not in client.get("/api/view").json()["nodes"]
@@ -131,7 +131,7 @@ def test_clouds_stage_update_discard_instantiate(client: testclient.TestClient, 
 def test_instantiate_failure(client: testclient.TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     root = _place(client, "aaaa0001")
     cloud = client.post(f"/api/nodes/{root}/stage", json={}).json()["node_id"]
-    monkeypatch.setenv("FAKE_CLAUDE_FAIL", "1")
+    monkeypatch.setenv("FAKE_CODEX_FAIL", "1")
     response = client.post(f"/api/nodes/{cloud}/instantiate", json={})
     assert response.status_code == 400
     assert "boom" in response.json()["detail"]
@@ -156,12 +156,12 @@ def test_split_palette_note_signal_open_command(client: testclient.TestClient) -
     assert view["signals"]["jupiter_badge"] is False
     assert view["nodes"][root]["badge"] is False
     command = client.get(f"/api/nodes/{root}/open_command").json()["command"]
-    assert "--resume bbbb0001" in command
+    assert " resume bbbb0001" in command
     assert client.get(f"/api/nodes/{clouds[0]}/open_command").status_code == 400
     assert client.post("/api/nodes/missing/note", json={"note": "x"}).status_code == 400
 
 
-def test_clusters(client: testclient.TestClient, wt: core.Core, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_clusters(client: testclient.TestClient, wt: core.Core, monkeypatch: pytest.MonkeyPatch, repo_a: str) -> None:
     a = _place(client, "aaaa0001")
     b = _place(client, "aaaa0002")
     other = _place(client, "bbbb0001")
@@ -185,14 +185,14 @@ def test_clusters(client: testclient.TestClient, wt: core.Core, monkeypatch: pyt
     assert client.get("/api/view").json()["busy"]["model_name"] == []
     assert client.post(f"/api/clusters/{cluster}/dissolve").status_code == 200
     assert client.get("/api/view").json()["clusters"] == {}
-    created = client.post("/api/clusters", json={"project": "-repo-a", "name": name, "members": [a, b]})
+    created = client.post("/api/clusters", json={"project": repo_a, "name": name, "members": [a, b]})
     assert created.status_code == 200
-    bad = client.post("/api/clusters", json={"project": "-repo-a", "name": name, "members": [other]})
+    bad = client.post("/api/clusters", json={"project": repo_a, "name": name, "members": [other]})
     assert bad.status_code == 400
     assert client.post("/api/clusters/k-nope/dissolve").status_code == 400
 
 
-def test_pull_levels(client: testclient.TestClient) -> None:
+def test_pull_levels(client: testclient.TestClient, repo_a: str) -> None:
     a = _place(client, "aaaa0001")
     b = _place(client, "bbbb0001")
     full = client.post("/api/pull", json={"source": a, "target": b, "level": "full"}).json()
@@ -206,7 +206,7 @@ def test_pull_levels(client: testclient.TestClient) -> None:
     c = _place(client, "aaaa0002")
     cluster = client.post(
         "/api/clusters",
-        json={"project": "-repo-a", "name": "Flatsat power and battery emulator work", "members": [a, c]},
+        json={"project": repo_a, "name": "Flatsat power and battery emulator work", "members": [a, c]},
     ).json()["cluster_id"]
     cluster_pull = client.post("/api/pull", json={"source": cluster, "target": b}).json()
     assert "cluster" in pathlib.Path(cluster_pull["file"]).read_text()
@@ -258,12 +258,12 @@ def test_review_errors(client: testclient.TestClient, monkeypatch: pytest.Monkey
     assert client.post("/api/reviews", json={"target": a, "problem": "x", "include": "all"}).status_code == 400
     assert client.post("/api/reviews", json={"target": a, "problem": "x", "reviewer": cloud}).status_code == 400
     assert client.get("/api/reviews/rev-nope").status_code == 400
-    monkeypatch.setenv("FAKE_CLAUDE_FAIL", "1")
+    monkeypatch.setenv("FAKE_CODEX_FAIL", "1")
     rid = client.post("/api/reviews", json={"target": a, "problem": "x", "include": "none"}).json()["review_id"]
     [failed] = _wait_reviews(client, [rid])
     assert failed["status"] == "error" and "boom" in failed["error"]
     assert client.get(f"/api/reviews/{rid}/prompt").status_code == 400
-    monkeypatch.delenv("FAKE_CLAUDE_FAIL")
+    monkeypatch.delenv("FAKE_CODEX_FAIL")
     assert client.post(f"/api/reviews/{rid}/run").status_code == 200
     [retried] = _wait_reviews(client, [rid])
     assert retried["status"] == "done"
@@ -292,3 +292,26 @@ def test_group_parent_endpoint(client: testclient.TestClient) -> None:
     assert client.get("/api/view").json()["nodes"][c]["group_parent"] == group
     assert client.post(f"/api/nodes/{a}/group_parent", json={"group_id": group}).status_code == 400
     assert client.post(f"/api/nodes/{c}/group_parent", json={"group_id": None}).status_code == 200
+
+
+def test_purpose_generates_in_background(client: testclient.TestClient) -> None:
+    first = client.get("/api/sessions/aaaa0001/purpose").json()
+    assert first == {"purpose": None, "current": False, "error": None}
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        r = client.get("/api/sessions/aaaa0001/purpose").json()
+        if r["current"]:
+            break
+        time.sleep(0.05)
+    assert r["current"] and r["purpose"].startswith("FAKE OUTPUT")
+    assert client.get("/api/sessions/aaaa0001").json()["last_message"].startswith("Working on ")
+
+
+def test_purpose_failure_reported(client: testclient.TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("FAKE_CODEX_FAIL", "1")
+    r = client.get("/api/sessions/aaaa0001/purpose").json()
+    deadline = time.time() + 10
+    while time.time() < deadline and not r["error"]:
+        time.sleep(0.05)
+        r = client.get("/api/sessions/aaaa0001/purpose").json()
+    assert r["error"] and "boom" in r["error"] and not r["current"]
